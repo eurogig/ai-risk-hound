@@ -1,69 +1,50 @@
-# Welcome to your Lovable project
 
-## Project info
+# AI Risk Detector for Git Repositories
+
+## Project Overview
+
+AI Risk Detector is a tool designed to scan Git repositories for AI components and assess potential security risks. The tool analyzes repository files, identifies AI libraries, frameworks, and code patterns, and provides actionable insights into security vulnerabilities.
+
+## Features
+
+- **Simple Repository Analysis**: Enter a GitHub repository URL and receive a comprehensive risk assessment
+- **AI Component Detection**: Identify AI libraries, frameworks, and patterns in your codebase
+- **Security Risk Assessment**: Get insights into potential vulnerabilities related to AI implementation
+- **Remediation Suggestions**: Receive actionable recommendations to mitigate identified risks
+- **Code References**: View specific locations in your codebase where AI components are used
+
+## Usage
+
+1. Visit the web interface
+2. Enter the URL of the GitHub repository you want to analyze
+3. Click "Analyze Repository" and wait for the results
+4. Review the detailed risk report with identified AI components, security risks, and remediation suggestions
+
+## Technical Details
+
+### Web Interface
+
+The web interface is built with:
+- React
+- TypeScript
+- Tailwind CSS
+- Shadcn/UI components
+
+### API (Simulated)
+
+In a full implementation, the API would be built with:
+- FastAPI (Python)
+- Asynchronous processing for repository analysis
+- GitHub API integration for repository access
+- Signature-based and heuristic detection algorithms
+
+### Future Extensions
+
+- Command-line interface (CLI) for local analysis
+- Importable Python library for integration with other security tools
+- Continuous monitoring with webhook support for new commits
+- Integration with CI/CD pipelines for automated security scanning
+
+## Project URL
 
 **URL**: https://lovable.dev/projects/05115e4d-46ab-47ed-bae0-709ea8b2890f
-
-## How can I edit this code?
-
-There are several ways of editing your application.
-
-**Use Lovable**
-
-Simply visit the [Lovable Project](https://lovable.dev/projects/05115e4d-46ab-47ed-bae0-709ea8b2890f) and start prompting.
-
-Changes made via Lovable will be committed automatically to this repo.
-
-**Use your preferred IDE**
-
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
-
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
-
-Follow these steps:
-
-```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
-
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
-
-# Step 3: Install the necessary dependencies.
-npm i
-
-# Step 4: Start the development server with auto-reloading and an instant preview.
-npm run dev
-```
-
-**Edit a file directly in GitHub**
-
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
-
-**Use GitHub Codespaces**
-
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
-
-## What technologies are used for this project?
-
-This project is built with .
-
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
-
-## How can I deploy this project?
-
-Simply open [Lovable](https://lovable.dev/projects/05115e4d-46ab-47ed-bae0-709ea8b2890f) and click on Share -> Publish.
-
-## I want to use a custom domain - is that possible?
-
-We don't support custom domains (yet). If you want to deploy your project under your own domain then we recommend using Netlify. Visit our docs for more details: [Custom domains](https://docs.lovable.dev/tips-tricks/custom-domain/)
