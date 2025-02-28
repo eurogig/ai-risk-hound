@@ -68,6 +68,39 @@ const ReportResults = ({ report }: ReportResultsProps) => {
     );
   };
 
+  // Get AI components that might be related to a security risk
+  const getRelatedAIComponents = (risk: { risk: string }) => {
+    const riskLower = risk.risk.toLowerCase();
+    
+    // Map risks to relevant component types
+    const riskToComponentTypes: Record<string, string[]> = {
+      "prompt injection": ["LLM Provider", "LLM Framework", "Local LLM"],
+      "data leakage": ["Vector Database", "RAG Framework", "Embedding Model", "LLM Provider", "LLM Framework"],
+      "hallucination": ["LLM Provider", "LLM Framework", "Local LLM"],
+      "api key exposure": ["LLM Provider", "Vector Database"],
+      "model poisoning": ["LLM Provider", "LLM Framework", "ML Framework"],
+    };
+    
+    // Find the matching risk pattern
+    const matchingPattern = Object.keys(riskToComponentTypes).find(pattern => 
+      riskLower.includes(pattern)
+    );
+    
+    if (matchingPattern) {
+      const relevantTypes = riskToComponentTypes[matchingPattern];
+      return report.ai_components_detected.filter(comp => 
+        relevantTypes.includes(comp.type)
+      );
+    }
+    
+    // Default - if no specific matching, return all components for risks with vector/RAG/LLM keywords
+    if (riskLower.includes("vector") || riskLower.includes("rag") || riskLower.includes("llm") || riskLower.includes("ai")) {
+      return report.ai_components_detected;
+    }
+    
+    return [];
+  };
+
   // Get code references that aren't related to any security risks
   const getUnrelatedCodeReferences = () => {
     const allRiskRefIds = new Set(
@@ -137,57 +170,78 @@ const ReportResults = ({ report }: ReportResultsProps) => {
         </Card>
       )}
 
-      {/* Security Risks Section with Connected Code References */}
+      {/* Security Risks Section with Connected Code References and AI Components */}
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-xl">Security Risks</CardTitle>
         </CardHeader>
         <CardContent>
           {report.security_risks.length > 0 ? (
-            <div className="space-y-6">
+            <Accordion type="single" collapsible className="w-full">
               {report.security_risks.map((risk, index) => {
                 // Get code references related to this specific risk using the IDs
                 const relatedReferences = getRelatedCodeReferences(risk);
+                // Get AI components potentially related to this risk
+                const relatedComponents = getRelatedAIComponents(risk);
                 
                 return (
-                  <div key={index} className="space-y-3">
-                    <div className="p-3 rounded-md bg-gray-50">
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="font-medium">{risk.risk}</span>
-                        <Badge className={getSeverityColor(risk.severity)}>
+                  <AccordionItem key={index} value={`risk-${index}`}>
+                    <AccordionTrigger className="hover:no-underline py-3">
+                      <div className="flex items-center justify-between w-full pr-4">
+                        <span className="font-medium text-left">{risk.risk}</span>
+                        <Badge className={`${getSeverityColor(risk.severity)} ml-2`}>
                           {risk.severity}
                         </Badge>
                       </div>
-                      <p className="text-sm text-gray-600">{risk.description}</p>
-                    </div>
-                    
-                    {/* Code Evidence for this risk - only shown if there are relevant references */}
-                    {relatedReferences.length > 0 && (
-                      <div className="ml-4 border-l-2 border-gray-200 pl-4">
-                        <p className="text-sm text-gray-500 mb-2">Evidence found in code:</p>
-                        <Accordion type="single" collapsible className="w-full">
-                          {relatedReferences.map((reference, refIndex) => (
-                            <AccordionItem key={refIndex} value={`risk-${index}-ref-${refIndex}`}>
-                              <AccordionTrigger className="hover:no-underline text-sm">
-                                <div className="flex items-center text-left">
-                                  <span className="font-medium">{reference.file}</span>
-                                  <span className="ml-2 text-sm text-gray-500">Line {reference.line}</span>
+                    </AccordionTrigger>
+                    <AccordionContent>
+                      <div className="space-y-4 pt-2">
+                        <p className="text-gray-600">{risk.description}</p>
+                        
+                        {/* Related AI Components Section */}
+                        {relatedComponents.length > 0 && (
+                          <div className="mt-4">
+                            <h4 className="text-sm font-medium text-gray-700 mb-2">Related AI Components:</h4>
+                            <div className="space-y-2">
+                              {relatedComponents.map((component, compIndex) => (
+                                <div key={compIndex} className="p-2 bg-gray-50 rounded border border-gray-100 text-sm">
+                                  <div className="font-medium">{component.name}</div>
+                                  <div className="text-xs text-gray-500">{component.type}</div>
                                 </div>
-                              </AccordionTrigger>
-                              <AccordionContent>
-                                <div className="p-3 rounded-md font-mono text-sm overflow-x-auto bg-gray-100">
-                                  {reference.snippet}
-                                </div>
-                              </AccordionContent>
-                            </AccordionItem>
-                          ))}
-                        </Accordion>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        
+                        {/* Code Evidence for this risk - only shown if there are relevant references */}
+                        {relatedReferences.length > 0 && (
+                          <div className="mt-4">
+                            <h4 className="text-sm font-medium text-gray-700 mb-2">Evidence in Code:</h4>
+                            <Accordion type="single" collapsible className="w-full">
+                              {relatedReferences.map((reference, refIndex) => (
+                                <AccordionItem key={refIndex} value={`risk-${index}-ref-${refIndex}`} className="border border-gray-100 rounded-md mb-2">
+                                  <AccordionTrigger className="hover:no-underline text-sm px-3 py-2">
+                                    <div className="flex items-center text-left">
+                                      <span className="font-medium">{reference.file}</span>
+                                      <span className="ml-2 text-sm text-gray-500">Line {reference.line}</span>
+                                    </div>
+                                  </AccordionTrigger>
+                                  <AccordionContent>
+                                    <div className="p-3 rounded-md font-mono text-sm overflow-x-auto bg-gray-100">
+                                      {reference.snippet}
+                                    </div>
+                                  </AccordionContent>
+                                </AccordionItem>
+                              ))}
+                            </Accordion>
+                          </div>
+                        )}
                       </div>
-                    )}
-                  </div>
+                    </AccordionContent>
+                  </AccordionItem>
                 );
               })}
-            </div>
+            </Accordion>
           ) : (
             <div className="p-4 text-center text-gray-500">
               No security risks detected in this repository.
