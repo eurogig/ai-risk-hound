@@ -17,6 +17,12 @@ export const getRelatedAIComponents = (
   risk: { risk: string },
   aiComponents: AIComponent[]
 ) => {
+  // Add null check for risk.risk
+  if (!risk || !risk.risk) {
+    console.error("Invalid risk object in getRelatedAIComponents:", risk);
+    return [];
+  }
+  
   const riskLower = risk.risk.toLowerCase();
 
   // Map risks to relevant component types
@@ -205,7 +211,7 @@ export const enhanceCodeReferences = (
   // Add system prompt risk if detected
   if (promptRisk) {
     const existingPromptRisk = securityRisks.find(risk => 
-      risk.risk && risk.risk.toLowerCase().includes(riskTypes.systemPromptLeakage)
+      risk && risk.risk && risk.risk.toLowerCase().includes(riskTypes.systemPromptLeakage)
     );
     
     if (existingPromptRisk) {

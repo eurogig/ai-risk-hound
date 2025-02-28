@@ -98,7 +98,8 @@ const ReportResults = ({ report }: ReportResultsProps) => {
       ? report.remediation_suggestions.filter(suggestion => 
           suggestion !== null && 
           typeof suggestion === 'object' && 
-          suggestion.hasOwnProperty('suggestion')
+          suggestion.hasOwnProperty('suggestion') && 
+          typeof suggestion.suggestion === 'string'
         )
       : [];
     

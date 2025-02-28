@@ -30,15 +30,18 @@ const SecurityRisksCard = ({
   verifiedCodeReferences,
   aiComponents
 }: SecurityRisksCardProps) => {
+  // Filter to ensure we only process valid security risks
+  const validSecurityRisks = securityRisks.filter(risk => risk && typeof risk === 'object' && risk.risk);
+  
   return (
     <Card>
       <CardHeader className="pb-2">
         <CardTitle className="text-xl">Security Risks</CardTitle>
       </CardHeader>
       <CardContent>
-        {securityRisks.length > 0 ? (
+        {validSecurityRisks.length > 0 ? (
           <Accordion type="single" collapsible className="w-full">
-            {securityRisks.map((risk, index) => {
+            {validSecurityRisks.map((risk, index) => {
               // Get code references related to this specific risk using the IDs
               const relatedReferences = getRelatedCodeReferences(risk, verifiedCodeReferences);
               // Get AI components potentially related to this risk
