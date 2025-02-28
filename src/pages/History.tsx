@@ -4,9 +4,9 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Loader2 } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
-import { Link } from "react-router-dom";
 import ReportResults from "@/components/ReportResults";
 import Navigation from "@/components/Navigation";
+import { supabase } from "@/integrations/supabase/client";
 
 interface AnalysisRecord {
   id: number;
@@ -24,22 +24,24 @@ const History = () => {
   useEffect(() => {
     const fetchAnalyses = async () => {
       try {
-        const response = await fetch(
-          import.meta.env.VITE_SUPABASE_URL + '/rest/v1/repository_analyses?select=*&order=created_at.desc',
-          {
-            headers: {
-              'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY,
-              'Content-Type': 'application/json'
-            }
-          }
-        );
-
-        if (!response.ok) {
-          throw new Error('Failed to fetch analysis history');
+        setIsLoading(true);
+        
+        // Fetch analyses from Supabase database
+        const { data, error } = await supabase
+          .from('repository_analyses')
+          .select('*')
+          .order('created_at', { ascending: false });
+        
+        if (error) {
+          throw error;
         }
 
-        const data = await response.json();
-        setAnalyses(data);
+        setAnalyses(data || []);
+        
+        // Auto-select the first analysis if available
+        if (data && data.length > 0) {
+          setSelectedAnalysis(data[0]);
+        }
       } catch (err) {
         console.error('Error fetching analyses:', err);
         toast({
@@ -76,6 +78,11 @@ const History = () => {
             <Card>
               <CardContent className="p-6">
                 <p className="text-center text-gray-500">No analysis history found</p>
+                <div className="mt-4 text-center">
+                  <Button onClick={() => window.location.href = "/"}>
+                    Analyze a Repository
+                  </Button>
+                </div>
               </CardContent>
             </Card>
           ) : (

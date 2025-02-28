@@ -129,6 +129,7 @@ const Index = () => {
     try {
       addLog(`Saving analysis results to database for: ${repositoryUrl}`);
       
+      // For anonymous public access, we'll modify the policy to allow anonymous users to insert data
       const { error } = await supabase
         .from('repository_analyses')
         .insert({
@@ -137,10 +138,22 @@ const Index = () => {
         });
       
       if (error) {
+        if (error.code === '42501') { // Permission denied error
+          addLog('Permission denied: Cannot save analysis without authentication');
+          toast({
+            title: "Notice",
+            description: "Analysis results will not be saved to history (authentication required).",
+          });
+          return;
+        }
         throw error;
       }
       
       addLog('Analysis saved to database successfully');
+      toast({
+        title: "Saved to History",
+        description: "This analysis has been saved and can be viewed in the History tab.",
+      });
     } catch (err) {
       console.error('Error saving to database:', err);
       addLog(`Database error: ${err.message}`);
