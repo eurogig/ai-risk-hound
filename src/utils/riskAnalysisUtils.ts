@@ -205,7 +205,7 @@ export const enhanceCodeReferences = (
   // Add system prompt risk if detected
   if (promptRisk) {
     const existingPromptRisk = securityRisks.find(risk => 
-      risk.risk.toLowerCase().includes(riskTypes.systemPromptLeakage)
+      risk.risk && risk.risk.toLowerCase().includes(riskTypes.systemPromptLeakage)
     );
     
     if (existingPromptRisk) {
@@ -232,6 +232,11 @@ export const enhanceCodeReferences = (
 
   // Add OWASP categories to security risks if they don't have them
   securityRisks.forEach(risk => {
+    if (!risk || !risk.risk) {
+      console.error("Invalid risk object:", risk);
+      return; // Skip this risk and continue with the next one
+    }
+    
     const riskLower = risk.risk.toLowerCase();
     
     // Find the matching OWASP category
@@ -256,30 +261,35 @@ export const enhanceCodeReferences = (
 
   // Find all security risks
   const promptInjectionRisk = securityRisks.find((risk) =>
-    risk.risk.toLowerCase().includes(riskTypes.promptInjection)
+    risk && risk.risk && risk.risk.toLowerCase().includes(riskTypes.promptInjection)
   );
 
   const dataLeakageRisk = securityRisks.find((risk) =>
-    risk.risk.toLowerCase().includes(riskTypes.dataLeakage)
+    risk && risk.risk && risk.risk.toLowerCase().includes(riskTypes.dataLeakage)
   );
 
   const hallucinationRisk = securityRisks.find((risk) =>
-    risk.risk.toLowerCase().includes(riskTypes.hallucination)
+    risk && risk.risk && risk.risk.toLowerCase().includes(riskTypes.hallucination)
   );
 
   const apiKeyExposureRisk = securityRisks.find((risk) =>
-    risk.risk.toLowerCase().includes(riskTypes.apiKeyExposure)
+    risk && risk.risk && risk.risk.toLowerCase().includes(riskTypes.apiKeyExposure)
   );
 
   // Initialize related_code_references arrays if they don't exist
   securityRisks.forEach((risk) => {
-    if (!risk.related_code_references) {
+    if (risk && !risk.related_code_references) {
       risk.related_code_references = [];
     }
   });
 
   // Associate code references with appropriate risks
   verifiedCodeReferences.forEach((ref) => {
+    if (!ref || !ref.file || !ref.snippet) {
+      console.error("Invalid code reference:", ref);
+      return; // Skip this reference and continue with the next one
+    }
+    
     const fileName = ref.file.toLowerCase();
     const snippet = ref.snippet.toLowerCase();
 

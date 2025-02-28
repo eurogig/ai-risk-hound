@@ -53,8 +53,29 @@ const ReportResults = ({ report }: ReportResultsProps) => {
     );
   }
   
+  // Extra validation steps for required arrays
+  if (!Array.isArray(report.code_references) || !Array.isArray(report.security_risks) || !Array.isArray(report.ai_components_detected)) {
+    console.error("Report arrays are not valid arrays:", report);
+    return (
+      <Alert variant="destructive">
+        <AlertTriangleIcon className="h-4 w-4" />
+        <AlertTitle>Invalid Report Data</AlertTitle>
+        <AlertDescription>
+          <p>The report contains invalid data structures. Expected arrays but received:</p>
+          <pre className="mt-2 p-2 bg-gray-100 rounded text-xs overflow-auto">
+            {JSON.stringify({
+              code_references_type: typeof report.code_references,
+              security_risks_type: typeof report.security_risks,
+              ai_components_type: typeof report.ai_components_detected
+            }, null, 2)}
+          </pre>
+        </AlertDescription>
+      </Alert>
+    );
+  }
+  
   // Filter out unverified code references
-  const verifiedCodeReferences = report.code_references.filter(ref => ref.verified === true);
+  const verifiedCodeReferences = report.code_references.filter(ref => ref && ref.verified === true);
   console.log("Verified code references:", verifiedCodeReferences.length);
   
   try {
@@ -111,7 +132,12 @@ const ReportResults = ({ report }: ReportResultsProps) => {
         <AlertDescription>
           <p>An error occurred while processing the report: {String(error)}</p>
           <pre className="mt-2 p-2 bg-gray-100 rounded text-xs overflow-auto">
-            Report data: {JSON.stringify(report, null, 2).substring(0, 500)}...
+            Report data: {JSON.stringify({
+              code_references_count: report.code_references?.length || 0,
+              security_risks_count: report.security_risks?.length || 0,
+              ai_components_count: report.ai_components_detected?.length || 0,
+              confidence_score: report.confidence_score
+            }, null, 2)}
           </pre>
         </AlertDescription>
       </Alert>
