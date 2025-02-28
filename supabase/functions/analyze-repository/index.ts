@@ -199,6 +199,12 @@ async function analyzeRepository(repositoryContent, options = {}) {
         }));
       }
       
+      // Make sure all fundamental LLM risks are present if LLM components are detected
+      const hasLLM = doesRepoContainLLM(analysisResult.ai_components_detected);
+      if (hasLLM) {
+        analysisResult.security_risks = ensureFundamentalLLMRisks(analysisResult.security_risks || []);
+      }
+      
       return analysisResult;
     } catch (error) {
       console.error("Error parsing OpenAI response:", error);
@@ -208,6 +214,65 @@ async function analyzeRepository(repositoryContent, options = {}) {
     console.error("Error in OpenAI API call:", error);
     throw error; // Propagate the error to be handled by the caller
   }
+}
+
+// Helper function to check if repository contains LLM components
+function doesRepoContainLLM(components) {
+  if (!components || components.length === 0) return false;
+  
+  const llmKeywords = ['llm', 'gpt', 'openai', 'ai', 'language model', 'completion', 'chat', 'claude', 'anthropic', 'mistral', 'llama'];
+  
+  return components.some(component => {
+    const name = component.name?.toLowerCase() || '';
+    const type = component.type?.toLowerCase() || '';
+    
+    return llmKeywords.some(keyword => 
+      name.includes(keyword) || 
+      type.includes(keyword) || 
+      type === 'llm api' || 
+      type === 'llm framework'
+    );
+  });
+}
+
+// Function to ensure fundamental LLM risks are included
+function ensureFundamentalLLMRisks(existingRisks) {
+  const risks = [...existingRisks];
+  
+  // Define the fundamental LLM risks
+  const fundamentalRisks = [
+    {
+      risk: "Prompt Injection Vulnerability",
+      severity: "high",
+      description: "LLM systems may be vulnerable to prompt injection attacks where user input can manipulate the model's behavior by overriding previous instructions.",
+      related_code_references: []
+    },
+    {
+      risk: "LLM Jailbreak Vulnerability",
+      severity: "medium",
+      description: "LLM implementations may be vulnerable to jailbreak techniques that bypass safety guardrails and content filters.",
+      related_code_references: []
+    },
+    {
+      risk: "Potential for Hallucinations",
+      severity: "medium",
+      description: "Language models can generate plausible-sounding but false or misleading information, which may be presented as factual to users.",
+      related_code_references: []
+    }
+  ];
+  
+  // Check if each fundamental risk is already present
+  for (const fundamentalRisk of fundamentalRisks) {
+    const riskExists = risks.some(risk => 
+      risk.risk.toLowerCase().includes(fundamentalRisk.risk.toLowerCase())
+    );
+    
+    if (!riskExists) {
+      risks.push(fundamentalRisk);
+    }
+  }
+  
+  return risks;
 }
 
 // Helper function for fetch with retry
@@ -341,6 +406,20 @@ function findCodeReferences(files, aiComponents) {
           securityRisk: true
         });
       }
+      
+      // Look for LLM-related code (prompts, completion calls, etc.)
+      if (line.match(/prompt|completion|chat|llm|gpt|generate|token/i) && 
+          (line.match(/openai/i) || line.match(/anthropic/i) || line.match(/generate_text/i) || line.match(/llm\./i))) {
+        
+        codeReferences.push({
+          id: `ref_${refId++}`,
+          file: file.path,
+          line: lineNumber,
+          snippet: line.trim(),
+          verified: true,
+          llmUsage: true
+        });
+      }
     });
   });
   
@@ -362,14 +441,47 @@ function identifySecurityRisks(files, aiComponents, codeReferences) {
     });
   }
   
-  // Check for RAG components alongside LLM usage
+  // Check for LLM usage
   const hasLLM = aiComponents.some(comp => 
     comp.name.toLowerCase() === 'openai' || 
     comp.name.toLowerCase().includes('llm') ||
     comp.name.toLowerCase().includes('gpt') ||
-    comp.name.toLowerCase() === 'langchain'
+    comp.name.toLowerCase() === 'langchain' ||
+    comp.name.toLowerCase() === 'anthropic' ||
+    comp.name.toLowerCase() === 'claude' ||
+    comp.type?.toLowerCase().includes('llm')
   );
   
+  const llmRefs = codeReferences.filter(ref => ref.llmUsage);
+  
+  // Add fundamental LLM risks if LLM is detected
+  if (hasLLM || llmRefs.length > 0) {
+    // Add prompt injection risk
+    risks.push({
+      risk: "Prompt Injection Vulnerability",
+      severity: "high",
+      description: "LLM systems may be vulnerable to prompt injection attacks where user input can manipulate the model's behavior by overriding previous instructions.",
+      related_code_references: llmRefs.map(ref => ref.id)
+    });
+    
+    // Add jailbreak risk
+    risks.push({
+      risk: "LLM Jailbreak Vulnerability",
+      severity: "medium",
+      description: "LLM implementations may be vulnerable to jailbreak techniques that bypass safety guardrails and content filters.",
+      related_code_references: llmRefs.map(ref => ref.id)
+    });
+    
+    // Add hallucination risk
+    risks.push({
+      risk: "Potential for Hallucinations",
+      severity: "medium",
+      description: "Language models can generate plausible-sounding but false or misleading information, which may be presented as factual to users.",
+      related_code_references: llmRefs.map(ref => ref.id)
+    });
+  }
+  
+  // Check for RAG components alongside LLM usage
   const hasVectorDB = aiComponents.some(comp => 
     ['faiss', 'pinecone', 'weaviate', 'chromadb', 'qdrant'].includes(comp.name.toLowerCase()) ||
     comp.type?.toLowerCase().includes('vector')
@@ -410,11 +522,34 @@ function generateRemediationSuggestions(securityRisks) {
       suggestions.push("Use a retrieval filtering mechanism to prevent sensitive data from being included in context");
       suggestions.push("Consider implementing LLM guardrails to detect and prevent potential data leakage");
     }
+    
+    if (risk.risk === "Prompt Injection Vulnerability") {
+      suggestions.push("Sanitize and validate all user inputs before including them in LLM prompts");
+      suggestions.push("Use input formatting techniques to clearly separate instructions from user input");
+      suggestions.push("Consider implementing a prompt validation layer to detect potential injection attempts");
+    }
+    
+    if (risk.risk === "LLM Jailbreak Vulnerability") {
+      suggestions.push("Implement content filtering for both inputs and outputs");
+      suggestions.push("Use the latest model versions with improved safety mechanisms");
+      suggestions.push("Consider implementing additional guardrails like regular expression filters and output verification");
+    }
+    
+    if (risk.risk === "Potential for Hallucinations") {
+      suggestions.push("Implement fact-checking mechanisms for critical information");
+      suggestions.push("Set appropriate model parameters to reduce hallucination (lower temperature, higher top_p)");
+      suggestions.push("Consider source attribution in outputs to help users validate information");
+    }
   });
   
-  // Add general AI security best practices
-  suggestions.push("Implement rate limiting for all AI API calls");
-  suggestions.push("Add input validation and sanitization for all user inputs used in AI contexts");
+  // Add general AI security best practices if not already included
+  if (!suggestions.some(s => s.includes("rate limiting"))) {
+    suggestions.push("Implement rate limiting for all AI API calls");
+  }
+  
+  if (!suggestions.some(s => s.includes("input validation"))) {
+    suggestions.push("Add input validation and sanitization for all user inputs used in AI contexts");
+  }
   
   return suggestions;
 }
@@ -593,20 +728,33 @@ function extractAIComponentsFromMetadata(metadataFiles) {
     { name: 'spacy', type: 'NLP Library' },
     { name: 'nltk', type: 'NLP Library' },
     { name: 'gensim', type: 'NLP Library' },
+    { name: 'anthropic', type: 'LLM API' },
+    { name: 'llama-cpp-python', type: 'Local LLM' },
+    { name: 'llama-index', type: 'RAG Framework' },
     // Vector databases
     { name: 'faiss', type: 'Vector Database' },
+    { name: 'faiss-cpu', type: 'Vector Database' },
+    { name: 'faiss-gpu', type: 'Vector Database' },
     { name: 'pinecone', type: 'Vector Database' },
+    { name: 'pinecone-client', type: 'Vector Database' },
     { name: 'weaviate', type: 'Vector Database' },
+    { name: 'weaviate-client', type: 'Vector Database' },
     { name: 'chromadb', type: 'Vector Database' },
     { name: 'qdrant', type: 'Vector Database' },
+    { name: 'qdrant-client', type: 'Vector Database' },
     // JavaScript
     { name: '@openai/api', type: 'LLM API' },
+    { name: 'openai', type: 'LLM API' }, // JS version
     { name: 'langchainjs', type: 'LLM Framework' },
+    { name: 'langchain', type: 'LLM Framework' }, // JS version
+    { name: '@langchain/openai', type: 'LLM Framework' },
     { name: '@huggingface/inference', type: 'ML API' },
     { name: 'tensorflow.js', type: 'ML Framework' },
     { name: '@tensorflow/tfjs', type: 'ML Framework' },
     { name: 'ml5.js', type: 'ML Framework' },
     { name: 'brain.js', type: 'ML Framework' },
+    { name: '@anthropic-ai/sdk', type: 'LLM API' },
+    { name: 'anthropic', type: 'LLM API' }, // JS version
   ];
 
   const foundComponents = [];
@@ -804,7 +952,10 @@ function mightContainAIImports(file) {
     'import keras', 'from keras',
     'import sklearn', 'from sklearn',
     'import numpy', 'from numpy',
-    'import pandas', 'from pandas'
+    'import pandas', 'from pandas',
+    'import anthropic', 'from anthropic',
+    'llm', 'gpt', 'bert', 'transformer',
+    'embedding', 'vector', 'faiss', 'pinecone', 'weaviate', 'chromadb', 'qdrant'
   ];
   
   return aiKeywords.some(keyword => content.includes(keyword));
@@ -914,6 +1065,11 @@ Please be specific about AI components you identify, focusing on:
 3. Vector databases (FAISS, Pinecone, etc.)
 4. Embedding generation
 5. RAG components
+
+IMPORTANT: Always include these fundamental security risks when LLM components are detected:
+1. Prompt Injection Vulnerability - user input potentially manipulating LLM behavior
+2. LLM Jailbreak Vulnerability - potential for bypassing safety guardrails
+3. Potential for Hallucinations - risk of presenting false information as factual
 
 For code_references, include only actual code you can verify from the provided files.`;
 
