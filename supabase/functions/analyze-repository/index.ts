@@ -100,12 +100,26 @@ serve(async (req) => {
     const prompt = buildPrompt(repositoryData, options?.systemPrompt);
     const response = await analyzeWithOpenAI(prompt, apiKey);
     
+    // New: Check for and remove markdown formatting in the response
+    let jsonStr = response;
+    
+    // Check if the response contains markdown code blocks
+    if (jsonStr.includes('```json')) {
+      console.log('Detected markdown JSON formatting in OpenAI response, cleaning...');
+      // Extract JSON from markdown code blocks
+      const jsonMatch = jsonStr.match(/```json\s*([\s\S]*?)\s*```/);
+      if (jsonMatch && jsonMatch[1]) {
+        jsonStr = jsonMatch[1].trim();
+      }
+    }
+    
     // Parse the response into a structured report
     let report;
     try {
-      report = JSON.parse(response);
+      report = JSON.parse(jsonStr);
     } catch (parseError) {
       console.error('Error parsing OpenAI response:', parseError);
+      console.error('Response content that failed to parse:', jsonStr.substring(0, 500) + '...');
       throw new Error('Failed to parse AI analysis. The response was not valid JSON.');
     }
     
