@@ -110,7 +110,6 @@ const ReportResults = ({ report }: ReportResultsProps) => {
         fileName.includes('gpt') ||
         fileName.includes('openai') ||
         fileName.includes('prompt') ||
-        fileName.includes('saige') || // specific to user's example
         snippet.includes('openai') ||
         snippet.includes('llm') ||
         snippet.includes('gpt') ||
