@@ -69,15 +69,25 @@ const Index = () => {
         description: "This comprehensive analysis may take a bit longer. Please wait...",
       });
       
-      // Include specific system prompt instructions to reduce hallucinations
+      // Include specific system prompt instructions to reduce hallucinations and detect RAG components
       const payload = {
         repositoryUrl,
         options: {
           systemPrompt: `Analyze the GitHub repository and provide insights about AI components and security risks. 
-          Only report code references that you can confirm exist in the repository. 
-          Do not invent or hallucinate file paths or code snippets. 
-          If uncertain about specific files, focus on identifying patterns and general concerns instead.
-          If you cannot find specific code references, leave that section empty rather than making suggestions.`
+          
+          When analyzing repositories:
+          1. Only report code references that you can confirm exist in the repository. 
+          2. Do not invent or hallucinate file paths or code snippets.
+          3. If uncertain about specific files, focus on identifying patterns and general concerns instead.
+          4. If you cannot find specific code references, leave that section empty rather than making suggestions.
+          
+          Specifically look for these RAG (Retrieval Augmented Generation) components:
+          - Vector databases: FAISS, Pinecone, Weaviate, ChromaDB, Qdrant
+          - Embedding generation libraries: sentence-transformers, OpenAI embeddings, HuggingFace embeddings
+          - Search integrations for document retrieval
+          
+          Only flag "Potential for Data Leakage via LLM" as a security risk if RAG components are detected alongside LLM usage.
+          Without RAG components, standard LLM integration poses lower data leakage risk.`
         }
       };
       
