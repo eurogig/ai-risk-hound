@@ -30,11 +30,24 @@ const SecurityRisksCard = ({
   verifiedCodeReferences,
   aiComponents
 }: SecurityRisksCardProps) => {
+  // Add debug logging to see what security risks we're receiving
+  console.log("Security risks in SecurityRisksCard:", JSON.stringify(securityRisks, null, 2));
+  
   // Filter to ensure we only process valid security risks
   const validSecurityRisks = securityRisks.filter(risk => {
-    if (!risk || typeof risk !== 'object') return false;
-    return !!(risk.risk || risk.risk_name); // Must have either risk or risk_name
+    if (!risk || typeof risk !== 'object') {
+      console.log("Invalid risk object:", risk);
+      return false;
+    }
+    // Must have either risk or risk_name
+    const hasRisk = !!(risk.risk || risk.risk_name); 
+    if (!hasRisk) {
+      console.log("Risk without name:", risk);
+    }
+    return hasRisk;
   });
+  
+  console.log("Valid security risks count:", validSecurityRisks.length);
   
   return (
     <Card>

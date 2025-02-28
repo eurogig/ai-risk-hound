@@ -100,6 +100,10 @@ const Index = () => {
         console.log("Debug info:", data.debug);
       }
       
+      // Log extensive details about the returned data
+      addLog(`Full response data: ${JSON.stringify(data, null, 2)}`);
+      console.log("Full response data:", data);
+      
       // Log some statistics about what was found
       if (data.code_references) {
         addLog(`Found ${data.code_references.length} code references`);
@@ -112,6 +116,17 @@ const Index = () => {
       
       if (data.ai_components_detected) {
         addLog(`Found ${data.ai_components_detected.length} AI components`);
+      }
+
+      if (data.security_risks) {
+        addLog(`Found ${data.security_risks.length} security risks`);
+        // Log the names of all detected risks
+        const riskNames = data.security_risks.map(risk => risk.risk || risk.risk_name || 'Unnamed risk');
+        addLog(`Risks found: ${riskNames.join(', ')}`);
+      }
+      
+      if (data.remediation_suggestions) {
+        addLog(`Found ${data.remediation_suggestions.length} remediation suggestions`);
       }
       
       setReport(data);

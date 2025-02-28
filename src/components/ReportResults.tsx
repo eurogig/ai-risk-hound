@@ -14,8 +14,8 @@ interface ReportResultsProps {
 }
 
 const ReportResults = ({ report }: ReportResultsProps) => {
-  // Add debug logging
-  console.log("Report received in ReportResults:", report);
+  // Add extensive debug logging to see what's in the report
+  console.log("Complete report data:", JSON.stringify(report, null, 2));
   
   // Check if report is valid
   if (!report) {
@@ -74,6 +74,9 @@ const ReportResults = ({ report }: ReportResultsProps) => {
     );
   }
   
+  // Add detailed logging about the security risks to help debug
+  console.log("Security risks:", JSON.stringify(report.security_risks, null, 2));
+  
   // Filter out unverified code references
   const verifiedCodeReferences = report.code_references.filter(ref => ref && ref.verified === true);
   console.log("Verified code references:", verifiedCodeReferences.length);
@@ -86,28 +89,42 @@ const ReportResults = ({ report }: ReportResultsProps) => {
       report.confidence_score
     );
     
+    console.log("Enhanced security risks:", JSON.stringify(enhancedSecurityRisks, null, 2));
+    
     // Get code references that aren't related to any security risks
     const unrelatedCodeReferences = getUnrelatedCodeReferences(
       enhancedSecurityRisks,
       verifiedCodeReferences
     );
 
-    // Check remediation suggestions for validity before rendering
-    const validRemediationSuggestions = Array.isArray(report.remediation_suggestions) 
-      ? report.remediation_suggestions
-          .filter(suggestion => suggestion !== null)
-          .map(suggestion => {
-            if (typeof suggestion === 'string') {
-              return suggestion;
-            } else if (suggestion && typeof suggestion === 'object' && 'suggestion' in suggestion) {
+    // Process remediation suggestions with more detailed handling
+    let validRemediationSuggestions: string[] = [];
+
+    if (Array.isArray(report.remediation_suggestions)) {
+      console.log("Raw remediation suggestions:", JSON.stringify(report.remediation_suggestions, null, 2));
+      
+      // Process each suggestion carefully
+      validRemediationSuggestions = report.remediation_suggestions
+        .filter(suggestion => suggestion !== null && suggestion !== undefined)
+        .map(suggestion => {
+          if (typeof suggestion === 'string') {
+            return suggestion;
+          } else if (suggestion && typeof suggestion === 'object') {
+            // Handle different object formats
+            if ('suggestion' in suggestion && typeof suggestion.suggestion === 'string') {
               return suggestion.suggestion;
+            } else {
+              // Try to extract a string from the object
+              const stringValue = Object.values(suggestion).find(val => typeof val === 'string');
+              return stringValue || JSON.stringify(suggestion);
             }
-            return '';
-          })
-          .filter(suggestionText => suggestionText !== '')
-      : [];
+          }
+          return '';
+        })
+        .filter(suggestionText => suggestionText !== '');
+    }
     
-    console.log("Valid remediation suggestions:", validRemediationSuggestions.length);
+    console.log("Valid remediation suggestions:", validRemediationSuggestions);
 
     return (
       <div className="space-y-6 animate-in fade-in duration-500">
