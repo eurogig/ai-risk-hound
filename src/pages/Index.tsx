@@ -59,6 +59,39 @@ const Index = () => {
           options: {
             systemPrompt: `Analyze the GitHub repository and provide insights about AI components and security risks. 
             
+            Follow this exact output format:
+            {
+              "ai_components_detected": [ 
+                { "name": "ComponentName", "type": "ComponentType", "confidence": 0.95 } 
+              ],
+              "security_risks": [
+                { 
+                  "risk": "Risk Name",
+                  "severity": "High/Medium/Low",
+                  "description": "Risk description",
+                  "related_code_references": ["reference-id-1", "reference-id-2"],
+                  "owasp_category": {
+                    "id": "LLM01:2025",
+                    "name": "Category Name",
+                    "description": "Category description"
+                  }
+                }
+              ],
+              "code_references": [
+                {
+                  "id": "reference-id-1",
+                  "file": "path/to/file.py",
+                  "line": 42,
+                  "snippet": "code snippet",
+                  "verified": true
+                }
+              ],
+              "confidence_score": 0.87,
+              "remediation_suggestions": [
+                "Suggestion 1", "Suggestion 2"
+              ]
+            }
+            
             When analyzing repositories:
             1. Only report code references that you can confirm exist in the repository. 
             2. Do not invent or hallucinate file paths or code snippets.

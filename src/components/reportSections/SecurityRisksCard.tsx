@@ -34,20 +34,45 @@ const SecurityRisksCard = ({
   console.log("Security risks in SecurityRisksCard:", JSON.stringify(securityRisks, null, 2));
   
   // Filter to ensure we only process valid security risks
-  const validSecurityRisks = securityRisks.filter(risk => {
+  // Also deduplicate risks by name to prevent duplicates
+  const processedRisks = new Map<string, SecurityRisk>();
+  
+  securityRisks.forEach(risk => {
     if (!risk || typeof risk !== 'object') {
       console.log("Invalid risk object:", risk);
-      return false;
+      return;
     }
+    
     // Must have either risk or risk_name
-    const hasRisk = !!(risk.risk || risk.risk_name); 
-    if (!hasRisk) {
+    const riskName = risk.risk || risk.risk_name;
+    if (!riskName) {
       console.log("Risk without name:", risk);
+      return;
     }
-    return hasRisk;
+    
+    // If this risk is already in our map, merge related_code_references
+    if (processedRisks.has(riskName)) {
+      const existingRisk = processedRisks.get(riskName)!;
+      if (risk.related_code_references && existingRisk.related_code_references) {
+        existingRisk.related_code_references = [
+          ...new Set([
+            ...existingRisk.related_code_references,
+            ...risk.related_code_references
+          ])
+        ];
+      } else if (risk.related_code_references) {
+        existingRisk.related_code_references = [...risk.related_code_references];
+      }
+    } else {
+      // Add new risk to the map
+      processedRisks.set(riskName, risk);
+    }
   });
   
-  console.log("Valid security risks count:", validSecurityRisks.length);
+  // Convert map back to array
+  const validSecurityRisks = Array.from(processedRisks.values());
+  
+  console.log("Valid security risks count after deduplication:", validSecurityRisks.length);
   
   return (
     <Card>
