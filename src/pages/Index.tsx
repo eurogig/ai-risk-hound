@@ -58,10 +58,15 @@ const Index = () => {
       const supabaseUrl = "https://bnmbrtsyqxqoitrcesgu.supabase.co";
       const supabaseKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJubWJydHN5cXhxb2l0cmNlc2d1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDA3MDEyNDgsImV4cCI6MjA1NjI3NzI0OH0.PT-jorVmwDQIG0iKQ5bI2nCEClMxkoBv8yfRdu9-7XA";
       
-      // Try the simplified function first as it's more lightweight
-      const endpoint = `${supabaseUrl}/functions/v1/analyze-repository-simple`;
+      // Use the comprehensive analysis function instead of the simplified one
+      const endpoint = `${supabaseUrl}/functions/v1/analyze-repository`;
       
       console.log("Sending request to:", endpoint);
+      
+      toast({
+        title: "Analysis Started",
+        description: "This comprehensive analysis may take a bit longer. Please wait...",
+      });
       
       const response = await fetch(endpoint, {
         method: 'POST',
@@ -88,7 +93,7 @@ const Index = () => {
       
       toast({
         title: "Analysis Complete",
-        description: "Repository analysis has been completed successfully.",
+        description: "Comprehensive repository analysis has been completed successfully.",
       });
     } catch (err) {
       console.error('Error analyzing repository:', err);
