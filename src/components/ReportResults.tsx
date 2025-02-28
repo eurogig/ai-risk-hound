@@ -92,6 +92,13 @@ const ReportResults = ({ report }: ReportResultsProps) => {
       verifiedCodeReferences
     );
 
+    // Check remediation suggestions for validity before rendering
+    const validRemediationSuggestions = Array.isArray(report.remediation_suggestions) 
+      ? report.remediation_suggestions.filter(suggestion => suggestion && typeof suggestion === 'object' && suggestion.suggestion)
+      : [];
+    
+    console.log("Valid remediation suggestions:", validRemediationSuggestions.length);
+
     return (
       <div className="space-y-6 animate-in fade-in duration-500">
         <Alert className="bg-yellow-50 border-yellow-200">
@@ -117,9 +124,9 @@ const ReportResults = ({ report }: ReportResultsProps) => {
         {/* Additional Code References Section */}
         <AdditionalCodeReferencesCard references={unrelatedCodeReferences} />
 
-        {/* Remediation Suggestions */}
-        {report.remediation_suggestions && report.remediation_suggestions.length > 0 && (
-          <RemediationSuggestionsCard suggestions={report.remediation_suggestions} />
+        {/* Remediation Suggestions - Only show if valid suggestions exist */}
+        {validRemediationSuggestions.length > 0 && (
+          <RemediationSuggestionsCard suggestions={validRemediationSuggestions} />
         )}
       </div>
     );
