@@ -54,13 +54,9 @@ const Index = () => {
     setError(null);
     
     try {
-      // Use the Supabase URL and key from environment variables
-      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-      const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
-      
-      if (!supabaseUrl || !supabaseKey) {
-        throw new Error("Supabase configuration is missing. Please check your environment variables.");
-      }
+      // Use hardcoded Supabase URL and key
+      const supabaseUrl = "https://bnmbrtsyqxqoitrcesgu.supabase.co";
+      const supabaseKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJubWJydHN5cXhxb2l0cmNlc2d1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDA3MDEyNDgsImV4cCI6MjA1NjI3NzI0OH0.PT-jorVmwDQIG0iKQ5bI2nCEClMxkoBv8yfRdu9-7XA";
       
       // Try the simplified function first as it's more lightweight
       const endpoint = `${supabaseUrl}/functions/v1/analyze-repository-simple`;
