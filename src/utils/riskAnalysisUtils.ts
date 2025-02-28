@@ -62,83 +62,98 @@ export const getUnrelatedCodeReferences = (
   return verifiedCodeReferences.filter((ref) => !allRiskRefIds.has(ref.id));
 };
 
-// Map risk types to OWASP LLM Top 10 categories (updated to latest version)
+// Map risk types to OWASP LLM Top 10 categories (2025 version)
 const owaspCategoryMap: Record<string, { id: string; name: string; description: string }> = {
   "prompt injection": {
-    id: "LLM01",
+    id: "LLM01:2025",
     name: "Prompt Injection",
-    description: "Manipulating LLM behavior through crafted inputs to produce harmful or unauthorized outputs."
-  },
-  "insecure output handling": {
-    id: "LLM02", 
-    name: "Insecure Output Handling",
-    description: "Failure to properly validate or sanitize LLM-generated content before using it in applications."
-  },
-  "training data poisoning": {
-    id: "LLM03",
-    name: "Training Data Poisoning", 
-    description: "Manipulating an LLM's training data to induce harmful behaviors or create backdoors."
-  },
-  "model denial of service": {
-    id: "LLM04",
-    name: "Model Denial of Service",
-    description: "Exploiting LLM resource consumption to degrade performance or cause excessive costs."
-  },
-  "supply chain vulnerabilities": {
-    id: "LLM05", 
-    name: "Supply Chain Vulnerabilities",
-    description: "Weaknesses in the tools, libraries, and integrations that support LLM applications."
+    description: "A vulnerability where user inputs manipulate the LLM's behavior by altering its prompts."
   },
   "sensitive information disclosure": {
-    id: "LLM06",
+    id: "LLM02:2025", 
     name: "Sensitive Information Disclosure",
-    description: "LLMs may reveal sensitive information from their training data or previous interactions."
+    description: "Risks involving the exposure of confidential data within the LLM or its applications."
   },
-  "insecure plugin design": {
-    id: "LLM07",
-    name: "Insecure Plugin Design",
-    description: "Vulnerabilities in extensions that expand LLM functionality, potentially bypassing security boundaries."
+  "supply chain": {
+    id: "LLM03:2025",
+    name: "Supply Chain", 
+    description: "Vulnerabilities arising from the components and dependencies used in LLM development and deployment."
+  },
+  "data and model poisoning": {
+    id: "LLM04:2025",
+    name: "Data and Model Poisoning",
+    description: "Threats where malicious data is introduced during training, fine-tuning, or embedding processes."
+  },
+  "improper output handling": {
+    id: "LLM05:2025", 
+    name: "Improper Output Handling",
+    description: "Issues stemming from inadequate validation, sanitization, or escaping of LLM outputs."
   },
   "excessive agency": {
-    id: "LLM08",
+    id: "LLM06:2025",
     name: "Excessive Agency",
-    description: "When LLMs act beyond their authorized scope or make decisions without sufficient oversight."
+    description: "Concerns related to LLM systems being granted more autonomy than intended, leading to unintended actions."
   },
-  "overreliance": {
-    id: "LLM09",
-    name: "Overreliance",
-    description: "Excessive trust in LLM outputs without verification, leading to propagation of harmful information."
+  "system prompt leakage": {
+    id: "LLM07:2025",
+    name: "System Prompt Leakage",
+    description: "The exposure of system-level prompts that can reveal internal configurations or logic."
   },
-  "model theft": {
-    id: "LLM10",
-    name: "Model Theft",
-    description: "Unauthorized access to proprietary LLM weights, architecture, or training data."
+  "vector and embedding weaknesses": {
+    id: "LLM08:2025",
+    name: "Vector and Embedding Weaknesses",
+    description: "Security risks associated with the use of vectors and embeddings in LLM systems."
+  },
+  "misinformation": {
+    id: "LLM09:2025",
+    name: "Misinformation",
+    description: "The potential for LLMs to generate and propagate false or misleading information."
+  },
+  "unbounded consumption": {
+    id: "LLM10:2025",
+    name: "Unbounded Consumption",
+    description: "Scenarios where LLMs consume resources without limits, potentially leading to denial of service."
   },
   // Additional mappings for common risk types that might not directly match the category names
   "data leakage": {
-    id: "LLM06",
+    id: "LLM02:2025",
     name: "Sensitive Information Disclosure",
-    description: "LLMs may reveal sensitive information from their training data or previous interactions."
+    description: "Risks involving the exposure of confidential data within the LLM or its applications."
   },
   "hallucination": {
-    id: "LLM09",
-    name: "Overreliance",
-    description: "Excessive trust in LLM outputs without verification, leading to propagation of harmful information."
+    id: "LLM09:2025",
+    name: "Misinformation",
+    description: "The potential for LLMs to generate and propagate false or misleading information."
   },
   "api key exposure": {
-    id: "LLM05",
-    name: "Supply Chain Vulnerabilities",
-    description: "Weaknesses in the tools, libraries, and integrations that support LLM applications."
+    id: "LLM03:2025",
+    name: "Supply Chain",
+    description: "Vulnerabilities arising from the components and dependencies used in LLM development and deployment."
   },
   "model poisoning": {
-    id: "LLM03",
-    name: "Training Data Poisoning",
-    description: "Manipulating an LLM's training data to induce harmful behaviors or create backdoors."
+    id: "LLM04:2025",
+    name: "Data and Model Poisoning",
+    description: "Threats where malicious data is introduced during training, fine-tuning, or embedding processes."
   },
   "denial of service": {
-    id: "LLM04",
-    name: "Model Denial of Service",
-    description: "Exploiting LLM resource consumption to degrade performance or cause excessive costs."
+    id: "LLM10:2025",
+    name: "Unbounded Consumption",
+    description: "Scenarios where LLMs consume resources without limits, potentially leading to denial of service."
+  },
+  "embedding vulnerability": {
+    id: "LLM08:2025",
+    name: "Vector and Embedding Weaknesses",
+    description: "Security risks associated with the use of vectors and embeddings in LLM systems."
+  },
+  "rag poisoning": {
+    id: "LLM08:2025",
+    name: "Vector and Embedding Weaknesses",
+    description: "Security risks associated with the use of vectors and embeddings in LLM systems."
+  },
+  "vector store": {
+    id: "LLM08:2025",
+    name: "Vector and Embedding Weaknesses",
+    description: "Security risks associated with the use of vectors and embeddings in LLM systems."
   }
 };
 
@@ -170,12 +185,12 @@ export const enhanceCodeReferences = (
         }
       }
       
-      // Default to LLM02 Insecure Output Handling if no specific match
+      // Default to LLM05:2025 Improper Output Handling if no specific match
       if (!risk.owasp_category) {
         risk.owasp_category = {
-          id: "LLM02",
-          name: "Insecure Output Handling",
-          description: "Failure to properly validate or sanitize LLM-generated content before using it in applications."
+          id: "LLM05:2025",
+          name: "Improper Output Handling",
+          description: "Issues stemming from inadequate validation, sanitization, or escaping of LLM outputs."
         };
       }
     }
