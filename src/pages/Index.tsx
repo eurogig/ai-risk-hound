@@ -125,7 +125,7 @@ const Index = () => {
     }
   };
 
-  const saveAnalysisToDatabase = async (repositoryUrl: string, analysisResult: RepositoryReport) => {
+  const saveAnalysisToDatabase = async (repositoryUrl: string, analysisResult: any) => {
     try {
       addLog(`Saving analysis results to database for: ${repositoryUrl}`);
       
@@ -134,7 +134,7 @@ const Index = () => {
         .from('repository_analyses')
         .insert({
           repository_url: repositoryUrl,
-          analysis_result: analysisResult
+          analysis_result: analysisResult as any
         });
       
       if (error) {
