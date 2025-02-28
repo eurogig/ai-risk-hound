@@ -61,51 +61,113 @@ const ReportResults = ({ report }: ReportResultsProps) => {
   // Filter out unverified code references
   const verifiedCodeReferences = report.code_references.filter(ref => ref.verified === true);
 
-  // Enhance unrelated code refs detection to associate RAG/vector DB refs with data leakage risks
+  // Enhance report by connecting code references to relevant security risks
   const enhanceCodeReferences = () => {
-    // Create a map of risk IDs to risk objects for easy lookup
-    const riskById = new Map();
+    // Create a map of risk types for easy lookup
+    const riskTypes = {
+      promptInjection: 'prompt injection',
+      dataLeakage: 'data leakage',
+      hallucination: 'hallucination',
+      apiKeyExposure: 'api key exposure',
+      modelPoisoning: 'model poisoning',
+    };
+    
+    // Find all security risks
+    const promptInjectionRisk = report.security_risks.find(risk => 
+      risk.risk.toLowerCase().includes(riskTypes.promptInjection)
+    );
+    
+    const dataLeakageRisk = report.security_risks.find(risk => 
+      risk.risk.toLowerCase().includes(riskTypes.dataLeakage)
+    );
+    
+    const hallucinationRisk = report.security_risks.find(risk => 
+      risk.risk.toLowerCase().includes(riskTypes.hallucination)
+    );
+    
+    const apiKeyExposureRisk = report.security_risks.find(risk => 
+      risk.risk.toLowerCase().includes(riskTypes.apiKeyExposure)
+    );
+    
+    // Initialize related_code_references arrays if they don't exist
     report.security_risks.forEach(risk => {
-      // Risk ID is based on the risk name (lowercase, no spaces)
-      const riskId = risk.risk.toLowerCase().replace(/\s+/g, '_');
-      riskById.set(riskId, risk);
-      
-      // Initialize related_code_references array if it doesn't exist
       if (!risk.related_code_references) {
         risk.related_code_references = [];
       }
     });
     
-    // Find data leakage risk if it exists
-    const dataLeakageRisk = report.security_risks.find(risk => 
-      risk.risk.toLowerCase().includes('data leakage')
-    );
-    
-    // Associate RAG/Vector DB references with data leakage risks
-    if (dataLeakageRisk) {
-      verifiedCodeReferences.forEach(ref => {
-        const fileName = ref.file.toLowerCase();
-        const snippet = ref.snippet.toLowerCase();
-        
-        // Check for common RAG/Vector DB patterns in filename or code
-        const isRagRelated = 
-          fileName.includes('rag') || 
-          fileName.includes('vector') || 
-          fileName.includes('embed') ||
-          snippet.includes('chromadb') ||
-          snippet.includes('pinecone') || 
-          snippet.includes('weaviate') ||
-          snippet.includes('qdrant') ||
-          snippet.includes('faiss') ||
-          snippet.includes('vector') ||
-          snippet.includes('embedding');
-        
-        // If it's RAG related and not already associated with this risk, add it
-        if (isRagRelated && !dataLeakageRisk.related_code_references.includes(ref.id)) {
+    // Associate code references with appropriate risks
+    verifiedCodeReferences.forEach(ref => {
+      const fileName = ref.file.toLowerCase();
+      const snippet = ref.snippet.toLowerCase();
+      
+      // LLM-related patterns for prompt injection
+      const isLlmRelated = 
+        fileName.includes('llm') || 
+        fileName.includes('chat') || 
+        fileName.includes('ai') || 
+        fileName.includes('bot') ||
+        fileName.includes('gpt') ||
+        fileName.includes('openai') ||
+        fileName.includes('prompt') ||
+        fileName.includes('saige') || // specific to user's example
+        snippet.includes('openai') ||
+        snippet.includes('llm') ||
+        snippet.includes('gpt') ||
+        snippet.includes('anthropic') ||
+        snippet.includes('chat') ||
+        snippet.includes('completion') ||
+        snippet.includes('prompt');
+      
+      // RAG/Vector DB patterns for data leakage
+      const isRagRelated = 
+        fileName.includes('rag') || 
+        fileName.includes('vector') || 
+        fileName.includes('embed') ||
+        snippet.includes('chromadb') ||
+        snippet.includes('pinecone') || 
+        snippet.includes('weaviate') ||
+        snippet.includes('qdrant') ||
+        snippet.includes('faiss') ||
+        snippet.includes('vector') ||
+        snippet.includes('embedding');
+      
+      // API key patterns
+      const isApiKeyRelated =
+        snippet.includes('api_key') ||
+        snippet.includes('apikey') ||
+        snippet.includes('api-key') ||
+        snippet.includes('secret') ||
+        snippet.includes('token');
+      
+      // Associate with prompt injection risk if LLM related
+      if (promptInjectionRisk && isLlmRelated) {
+        if (!promptInjectionRisk.related_code_references.includes(ref.id)) {
+          promptInjectionRisk.related_code_references.push(ref.id);
+        }
+      }
+      
+      // Associate with data leakage risk if RAG related
+      if (dataLeakageRisk && (isRagRelated || isLlmRelated)) {
+        if (!dataLeakageRisk.related_code_references.includes(ref.id)) {
           dataLeakageRisk.related_code_references.push(ref.id);
         }
-      });
-    }
+      }
+      
+      // Associate with API key exposure risk if API key related
+      if (apiKeyExposureRisk && isApiKeyRelated) {
+        if (!apiKeyExposureRisk.related_code_references.includes(ref.id)) {
+          apiKeyExposureRisk.related_code_references.push(ref.id);
+        }
+      }
+      
+      // Associate with hallucination risk if LLM related (LLMs can hallucinate)
+      if (hallucinationRisk && isLlmRelated) {
+        if (!hallucinationRisk.related_code_references.includes(ref.id)) {
+          hallucinationRisk.related_code_references.push(ref.id);
+        }
+      }
+    });
     
     return report;
   };
