@@ -60,21 +60,40 @@ const Index = () => {
       
       console.log("Connecting to Supabase:", supabaseUrl);
       
-      // Call the Supabase Edge Function to analyze the repository
-      const response = await fetch(
-        `${supabaseUrl}/functions/v1/analyze-repository`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${supabaseKey}`
-          },
-          body: JSON.stringify({ repositoryUrl })
-        }
-      );
-      
-      // For debugging
-      console.log("Response status:", response.status);
+      // Try the simplified function first
+      let response;
+      try {
+        response = await fetch(
+          `${supabaseUrl}/functions/v1/analyze-repository-simple`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${supabaseKey}`
+            },
+            body: JSON.stringify({ repositoryUrl })
+          }
+        );
+        
+        console.log("Simple function response status:", response.status);
+      } catch (err) {
+        console.log("Error calling simple function:", err);
+        
+        // If the simple function fails, try the main one
+        response = await fetch(
+          `${supabaseUrl}/functions/v1/analyze-repository`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${supabaseKey}`
+            },
+            body: JSON.stringify({ repositoryUrl })
+          }
+        );
+        
+        console.log("Main function response status:", response.status);
+      }
       
       if (!response.ok) {
         let errorMessage;
