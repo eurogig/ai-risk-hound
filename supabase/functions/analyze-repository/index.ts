@@ -1,3 +1,4 @@
+
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.36.0';
 import "https://deno.land/x/xhr@0.1.0/mod.ts"; // Required for OpenAI API to work
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
@@ -96,11 +97,59 @@ serve(async (req) => {
       }
     }
 
-    // Process repository content
-    const prompt = buildPrompt(repositoryData, options?.systemPrompt);
+    // Process repository content with consistent output format
+    const systemPromptTemplate = options?.systemPrompt || `Analyze the GitHub repository and provide insights about AI components and security risks. 
+
+Follow this exact output format:
+{
+  "ai_components_detected": [ 
+    { "name": "ComponentName", "type": "ComponentType", "description": "Description", "libraries_used": ["lib1"], "feature_function": "function", "key_implementation_details": ["detail"] } 
+  ],
+  "security_risks": [
+    { 
+      "risk_name": "Risk Name",
+      "severity": "High/Medium/Low",
+      "description": "Risk description",
+      "related_code_references": ["reference-id-1", "reference-id-2"],
+      "owasp_category": {
+        "id": "LLM01:2025",
+        "name": "Category Name",
+        "description": "Category description"
+      }
+    }
+  ],
+  "code_references": [
+    {
+      "id": "reference-id-1",
+      "file": "path/to/file.py",
+      "line": 42,
+      "snippet": "code snippet",
+      "verified": true
+    }
+  ],
+  "confidence_score": 0.87,
+  "remediation_suggestions": [
+    { "category": "Security", "type": "Code Refactoring", "description": "Suggestion 1" },
+    { "category": "Security", "type": "Data Handling Policy", "description": "Suggestion 2" }
+  ]
+}
+
+When analyzing repositories:
+1. Only report code references that you can confirm exist in the repository. 
+2. Do not invent or hallucinate file paths or code snippets.
+3. If uncertain about specific files, focus on identifying patterns and general concerns instead.
+4. If you cannot find specific code references, leave that section empty rather than making suggestions.
+
+IMPORTANT: Look carefully for HARDCODED SYSTEM PROMPTS in Python, TypeScript, and JavaScript files.
+- Check for string assignments like SYSTEM_PROMPT = "You are an AI assistant..."
+- Check for hardcoded function arguments like messages=[{"role": "system", "content": "You are helpful."}]
+- These are security risks because they can leak information or be manipulated
+- Report them under "System Prompt Leakage" risk category`;
+
+    const prompt = buildPrompt(repositoryData, systemPromptTemplate);
     const response = await analyzeWithOpenAI(prompt, apiKey);
     
-    // New: Check for and remove markdown formatting in the response
+    // Check for and remove markdown formatting in the response
     let jsonStr = response;
     
     // Check if the response contains markdown code blocks
@@ -123,23 +172,28 @@ serve(async (req) => {
       throw new Error('Failed to parse AI analysis. The response was not valid JSON.');
     }
     
+    // Make sure security_risks exists
+    report.security_risks = report.security_risks || [];
+    
     // Add the hardcoded system prompt risk to the report if found
     if (promptRisk && promptResults.length > 0) {
       // Check if there's already a system prompt risk in the report
-      const existingPromptRisk = report.security_risks?.find(risk => 
-        risk.risk?.toLowerCase().includes('system prompt') || 
-        risk.risk?.toLowerCase().includes('prompt leakage')
+      const existingPromptRiskIndex = report.security_risks.findIndex(risk => 
+        (risk.risk_name || risk.risk || "").toLowerCase().includes('system prompt') || 
+        (risk.risk_name || risk.risk || "").toLowerCase().includes('prompt leakage')
       );
       
-      if (existingPromptRisk) {
+      if (existingPromptRiskIndex >= 0) {
         // Merge the detected prompt references with the existing risk
+        const existingPromptRisk = report.security_risks[existingPromptRiskIndex];
         existingPromptRisk.related_code_references = [
           ...(existingPromptRisk.related_code_references || []),
-          ...promptRisk.related_code_references
+          ...promptRisk.related_code_references.filter(ref => 
+            !(existingPromptRisk.related_code_references || []).includes(ref)
+          )
         ];
       } else {
-        // Add the new risk to the report
-        report.security_risks = report.security_risks || [];
+        // No existing risk found, add the new risk to the report
         report.security_risks.push(promptRisk);
       }
       
@@ -147,6 +201,16 @@ serve(async (req) => {
       report.code_references = report.code_references || [];
       report.code_references.push(...promptResults);
     }
+    
+    // Ensure consistent field names in security risks
+    report.security_risks = report.security_risks.map(risk => {
+      // If risk has both risk and risk_name, prefer risk_name
+      if (risk.risk && !risk.risk_name) {
+        risk.risk_name = risk.risk;
+        delete risk.risk;
+      }
+      return risk;
+    });
     
     // Return the analysis result
     return new Response(
@@ -299,9 +363,7 @@ function buildPrompt(repositoryData: any[], systemPrompt?: string) {
   - Check for string assignments like SYSTEM_PROMPT = "You are an AI assistant..."
   - Check for hardcoded function arguments like messages=[{"role": "system", "content": "You are helpful."}]
   - These are security risks because they can leak information or be manipulated
-  - Report them under "System Prompt Leakage" risk category
-  
-  Be thorough in your analysis of all AI components and any security issues that may exist.`;
+  - Report them under "System Prompt Leakage" risk category`;
   
   const finalSystemPrompt = systemPrompt || defaultSystemPrompt;
   
@@ -319,7 +381,7 @@ function buildPrompt(repositoryData: any[], systemPrompt?: string) {
         {
           "confidence_score": number between 0 and 1 representing how confident you are this is an AI repository,
           "ai_components_detected": [array of objects with name, type, description, libraries_used, feature_function, and key_implementation_details],
-          "security_risks": [array of objects with risk name, severity, description, and related_code_references],
+          "security_risks": [array of objects with risk_name, severity, description, and related_code_references],
           "code_references": [array of objects with id, file, line, snippet, and verified flag],
           "remediation_suggestions": [array of objects with category, type and description]
         }
@@ -443,7 +505,7 @@ function detectSystemPrompts(repositoryData: any[]) {
   
   // Create a security risk object if prompts were found
   const promptRisk = promptResults.length > 0 ? {
-    risk: "Hardcoded System Prompts",
+    risk_name: "Hardcoded System Prompts",
     severity: "Medium",
     description: "Hardcoded system prompts were detected in the codebase. These may leak sensitive information about the application logic or create security vulnerabilities through prompt injection attacks.",
     related_code_references: promptResults.map(ref => ref.id),
