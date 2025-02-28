@@ -22,13 +22,15 @@ interface RepositoryReport {
     risk: string;
     severity: string;
     description: string;
+    related_code_references: string[]; // IDs of related code references
   }[];
   code_references: {
+    id: string; // Unique ID for each reference
     file: string;
     line: number;
     snippet: string;
-    verified?: boolean;
-    relatedTo?: string; // Security risk this reference is related to
+    verified: boolean;
+    relatedRisks?: string[]; // Risk names this reference is related to
   }[];
   confidence_score: number;
   remediation_suggestions: string[];
@@ -59,23 +61,20 @@ const ReportResults = ({ report }: ReportResultsProps) => {
   // Filter out unverified code references
   const verifiedCodeReferences = report.code_references.filter(ref => ref.verified === true);
 
-  // Helper function to find code references related to a specific risk
-  const findRelatedCodeReferences = (risk: string) => {
-    const keywords = risk.toLowerCase().split(' ');
+  // Get the code references for a specific security risk using the IDs
+  const getRelatedCodeReferences = (risk: { risk: string; related_code_references: string[] }) => {
+    return verifiedCodeReferences.filter(ref => 
+      risk.related_code_references && risk.related_code_references.includes(ref.id)
+    );
+  };
+
+  // Get code references that aren't related to any security risks
+  const getUnrelatedCodeReferences = () => {
+    const allRiskRefIds = new Set(
+      report.security_risks.flatMap(risk => risk.related_code_references || [])
+    );
     
-    return verifiedCodeReferences.filter(ref => {
-      // Check if explicitly related via the relatedTo property
-      if (ref.relatedTo && ref.relatedTo.toLowerCase() === risk.toLowerCase()) {
-        return true;
-      }
-      
-      // Check if the snippet contains key terms from the risk
-      const snippetLower = ref.snippet.toLowerCase();
-      return keywords.some(keyword => 
-        // Only consider meaningful keywords (longer than 3 chars)
-        keyword.length > 3 && snippetLower.includes(keyword)
-      );
-    });
+    return verifiedCodeReferences.filter(ref => !allRiskRefIds.has(ref.id));
   };
 
   return (
@@ -147,8 +146,8 @@ const ReportResults = ({ report }: ReportResultsProps) => {
           {report.security_risks.length > 0 ? (
             <div className="space-y-6">
               {report.security_risks.map((risk, index) => {
-                // Get code references related to this specific risk
-                const relatedReferences = findRelatedCodeReferences(risk.risk);
+                // Get code references related to this specific risk using the IDs
+                const relatedReferences = getRelatedCodeReferences(risk);
                 
                 return (
                   <div key={index} className="space-y-3">
@@ -198,35 +197,28 @@ const ReportResults = ({ report }: ReportResultsProps) => {
       </Card>
 
       {/* Additional Code References Section (showing references not connected to security risks) */}
-      {verifiedCodeReferences.length > 0 && (
+      {getUnrelatedCodeReferences().length > 0 && (
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-xl">AI References in Code</CardTitle>
           </CardHeader>
           <CardContent>
             <Accordion type="single" collapsible className="w-full">
-              {verifiedCodeReferences
-                .filter(ref => 
-                  // Only show references that haven't been displayed with security risks
-                  !report.security_risks.some(risk => 
-                    findRelatedCodeReferences(risk.risk).includes(ref)
-                  )
-                )
-                .map((reference, index) => (
-                  <AccordionItem key={index} value={`item-${index}`}>
-                    <AccordionTrigger className="hover:no-underline">
-                      <div className="flex items-center text-left">
-                        <span className="font-medium">{reference.file}</span>
-                        <span className="ml-2 text-sm text-gray-500">Line {reference.line}</span>
-                      </div>
-                    </AccordionTrigger>
-                    <AccordionContent>
-                      <div className="p-3 rounded-md font-mono text-sm overflow-x-auto bg-gray-100">
-                        {reference.snippet}
-                      </div>
-                    </AccordionContent>
-                  </AccordionItem>
-                ))}
+              {getUnrelatedCodeReferences().map((reference, index) => (
+                <AccordionItem key={index} value={`item-${index}`}>
+                  <AccordionTrigger className="hover:no-underline">
+                    <div className="flex items-center text-left">
+                      <span className="font-medium">{reference.file}</span>
+                      <span className="ml-2 text-sm text-gray-500">Line {reference.line}</span>
+                    </div>
+                  </AccordionTrigger>
+                  <AccordionContent>
+                    <div className="p-3 rounded-md font-mono text-sm overflow-x-auto bg-gray-100">
+                      {reference.snippet}
+                    </div>
+                  </AccordionContent>
+                </AccordionItem>
+              ))}
             </Accordion>
           </CardContent>
         </Card>
