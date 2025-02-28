@@ -5,6 +5,7 @@ import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { InfoIcon } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import {
   Accordion,
   AccordionContent,
@@ -402,11 +403,22 @@ const ReportResults = ({ report }: ReportResultsProps) => {
           <CardTitle className="text-xl">Remediation Suggestions</CardTitle>
         </CardHeader>
         <CardContent>
-          <ul className="space-y-2 list-disc pl-5">
-            {report.remediation_suggestions.map((suggestion, index) => (
-              <li key={index} className="text-gray-700">{suggestion}</li>
-            ))}
-          </ul>
+          <div className="space-y-6">
+            <ul className="space-y-2 list-disc pl-5">
+              {report.remediation_suggestions.map((suggestion, index) => (
+                <li key={index} className="text-gray-700">{suggestion}</li>
+              ))}
+            </ul>
+            
+            {/* Call to Action Button */}
+            <div className="pt-4 flex justify-center">
+              <a href="https://www.straiker.ai/" target="_blank" rel="noopener noreferrer">
+                <Button className="bg-gradient-to-r from-blue-600 to-indigo-700 hover:from-blue-700 hover:to-indigo-800 shadow-lg">
+                  Is Your AI Secure? Find Out with a Free AI Risk Assessment
+                </Button>
+              </a>
+            </div>
+          </div>
         </CardContent>
       </Card>
     </div>
