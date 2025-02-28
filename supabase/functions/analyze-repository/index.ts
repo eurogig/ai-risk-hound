@@ -1,4 +1,3 @@
-
 // Follow this setup guide to integrate the Deno runtime and the Supabase JS library with your project:
 // https://docs.deno.com/runtime/manual/getting_started/setup_your_environment
 // https://github.com/denoland/deno_std/tree/main/http/server.ts
@@ -448,15 +447,15 @@ function findPotentialCodeReferences(repositoryContent, aiComponents) {
       }
       
       // Check for potential hardcoded system prompts
-      if ((lowerLine.includes('system') && lowerLine.includes('prompt')) || 
-          (lowerLine.includes('role') && lowerLine.includes('system') && lowerLine.includes('content'))) {
+      if (isLikelySystemPrompt(line, { path: file.path, content: file.content })) {
         codeReferences.push({
           id: `ref_${refId++}`,
           file: file.path,
           line: lineNumber,
           snippet: line.trim(),
           verified: true,
-          prompt_related: true
+          prompt_related: true,
+          confidence: 0.85
         });
       }
     });
@@ -1426,4 +1425,56 @@ async function fetchFileContent(owner, repo, branch, path) {
     console.error(`Error fetching file ${path}:`, error);
     return null;
   }
+}
+
+// Check for potential hardcoded system prompts
+function isLikelySystemPrompt(line: string, fileContext: { path: string, content: string }): boolean {
+  const lowerLine = line.toLowerCase();
+  
+  // Skip if line is a comment
+  if (lowerLine.trim().startsWith('//') || lowerLine.trim().startsWith('/*') || lowerLine.trim().startsWith('*')) {
+    return false;
+  }
+
+  // Skip if referencing environment variables or configs
+  if (lowerLine.includes('process.env') || 
+      lowerLine.includes('os.environ') || 
+      lowerLine.includes('config.') ||
+      lowerLine.includes('getenv')) {
+    return false;
+  }
+
+  // Look for actual prompt assignment patterns
+  const promptPatterns = [
+    // OpenAI style system messages
+    /(?:const|let|var)\s+\w+\s*=\s*[{[]\s*{\s*role\s*:\s*['"]system['"]\s*,\s*content\s*:/i,
+    
+    // Direct system prompt assignments
+    /(?:const|let|var)\s+\w+\s*=\s*['"`]<\|system\|>/i,
+    
+    // Anthropic style system prompts
+    /(?:const|let|var)\s+\w+\s*=\s*['"`]Human:/i,
+    
+    // Common template literal patterns
+    /systemPrompt\s*=\s*`[^`]{10,}`/,
+    
+    // JSON-style prompt templates
+    /"system_prompt":\s*"[^"]{10,}"/
+  ];
+
+  // Check if line matches any prompt pattern
+  const hasPromptPattern = promptPatterns.some(pattern => pattern.test(line));
+  
+  if (!hasPromptPattern) {
+    return false;
+  }
+
+  // Additional validation - check if line contains actual content
+  const hasSubstantialContent = line.length > 50; // Arbitrary minimum length
+  
+  // Check if in test file
+  const isTestFile = fileContext.path.toLowerCase().includes('test') || 
+                     fileContext.path.toLowerCase().includes('spec');
+
+  return hasSubstantialContent && !isTestFile;
 }
