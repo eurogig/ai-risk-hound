@@ -1,3 +1,4 @@
+
 import "https://deno.land/x/xhr@0.1.0/mod.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 
@@ -34,7 +35,7 @@ interface RepositoryAnalysis {
   remediation_suggestions: string[];
 }
 
-async function fetchRepoFiles(repositoryUrl: string, maxFiles = 100): Promise<{path: string, content: string}[]> {
+async function fetchRepoFiles(repositoryUrl: string, maxFiles = 150): Promise<{path: string, content: string}[]> {
   // Extract owner and repo from URL
   const urlMatch = repositoryUrl.match(/github\.com\/([^\/]+)\/([^\/]+)/);
   if (!urlMatch) {
@@ -96,6 +97,13 @@ async function processRepoTree(treeData: any, owner: string, repo: string, branc
     '.c', '.cs', '.php', '.rb', '.swift', '.kt', '.rs', '.ipynb'
   ];
   
+  // RAG-related filenames and patterns to prioritize
+  const ragPatterns = [
+    /rag/i, /retriev/i, /embedding/i, /vector/i, /llm.+db/i, /db.+llm/i,
+    /index.+document/i, /document.+index/i, /search.+engine/i,
+    /chroma/i, /pinecone/i, /weaviate/i, /faiss/i, /qdrant/i
+  ];
+  
   // First, prioritize metadata files
   const metadataPaths = treeData.tree
     .filter((item: any) => {
@@ -108,11 +116,12 @@ async function processRepoTree(treeData: any, owner: string, repo: string, branc
   
   console.log(`Found ${metadataPaths.length} metadata files`);
   
-  // Then, add code files
-  const codePaths = treeData.tree
+  // Then, find RAG-related files with high priority
+  const ragPaths = treeData.tree
     .filter((item: any) => {
       return item.type === 'blob' && 
              codeExtensions.some(ext => item.path.endsWith(ext)) &&
+             ragPatterns.some(pattern => pattern.test(item.path)) &&
              !item.path.includes('node_modules/') &&
              !item.path.includes('dist/') &&
              !item.path.includes('build/') &&
@@ -120,10 +129,26 @@ async function processRepoTree(treeData: any, owner: string, repo: string, branc
     })
     .map((item: any) => item.path);
   
-  console.log(`Found ${codePaths.length} code files`);
+  console.log(`Found ${ragPaths.length} RAG-related files`);
   
-  // Combine and limit to maxFiles, ensuring metadata files are included
-  const selectedPaths = [...metadataPaths, ...codePaths].slice(0, maxFiles);
+  // Then, add regular code files
+  const codePaths = treeData.tree
+    .filter((item: any) => {
+      return item.type === 'blob' && 
+             codeExtensions.some(ext => item.path.endsWith(ext)) &&
+             !ragPatterns.some(pattern => pattern.test(item.path)) &&
+             !item.path.includes('node_modules/') &&
+             !item.path.includes('dist/') &&
+             !item.path.includes('build/') &&
+             !item.path.includes('vendor/');
+    })
+    .map((item: any) => item.path);
+  
+  console.log(`Found ${codePaths.length} regular code files`);
+  
+  // Combine and limit to maxFiles, ensuring metadata and RAG files are included
+  const combinedPaths = [...metadataPaths, ...ragPaths, ...codePaths];
+  const selectedPaths = combinedPaths.slice(0, maxFiles);
   
   console.log(`Selected ${selectedPaths.length} files to analyze`);
   
@@ -162,9 +187,10 @@ async function analyzeRepositoryWithOpenAI(
   
   console.log("Preparing repository data for analysis...");
   
-  // Pre-analyze metadata files to extract AI components
-  const metadataComponents = extractAIComponentsFromMetadata(repoFiles);
+  // Pre-analyze files to extract AI components
+  const { metadataComponents, preDetectedCodeReferences } = preAnalyzeRepositoryFiles(repoFiles);
   console.log(`Pre-extracted ${metadataComponents.length} AI components from metadata files`);
+  console.log(`Pre-detected ${preDetectedCodeReferences.length} code references from RAG-related files`);
   
   // Prepare repository content for analysis
   // Truncate file content to avoid token limits
@@ -188,14 +214,27 @@ async function analyzeRepositoryWithOpenAI(
   
   let allAnalysisResults: any[] = [];
   
-  // Enhance system prompt with detected components
+  // Enhance system prompt with detected components and code references
   let enhancedSystemPrompt = systemPrompt;
-  if (metadataComponents.length > 0) {
-    enhancedSystemPrompt += `\n\nIMPORTANT: I've already identified these AI components from metadata files:\n`;
-    metadataComponents.forEach(comp => {
-      enhancedSystemPrompt += `- ${comp.name} (${comp.type})\n`;
-    });
-    enhancedSystemPrompt += `\nPlease consider these as confirmed components with high confidence. Include them in your analysis along with any additional components you find in the code.`;
+  
+  if (metadataComponents.length > 0 || preDetectedCodeReferences.length > 0) {
+    enhancedSystemPrompt += `\n\nIMPORTANT: I've already identified key AI components and implementations in this repository:\n`;
+    
+    if (metadataComponents.length > 0) {
+      enhancedSystemPrompt += `\nConfirmed AI Libraries/Frameworks:\n`;
+      metadataComponents.forEach(comp => {
+        enhancedSystemPrompt += `- ${comp.name} (${comp.type})\n`;
+      });
+    }
+    
+    if (preDetectedCodeReferences.length > 0) {
+      enhancedSystemPrompt += `\nConfirmed Code Implementations:\n`;
+      preDetectedCodeReferences.forEach(ref => {
+        enhancedSystemPrompt += `- File: ${ref.file}, Line ${ref.line}: ${ref.snippet.substring(0, 80)}${ref.snippet.length > 80 ? '...' : ''}\n`;
+      });
+    }
+    
+    enhancedSystemPrompt += `\nThese are verified findings with high confidence. Include them in your analysis along with any additional components you find. If you see RAG (Retrieval Augmented Generation) implementations, this is particularly important to flag as it increases the security risk profile.`;
   }
   
   // Process each batch
@@ -250,16 +289,16 @@ async function analyzeRepositoryWithOpenAI(
   
   console.log("Consolidating analysis results...");
   
-  // Add pre-detected components to results
-  if (metadataComponents.length > 0) {
-    const metadataResult = {
+  // Add pre-detected components and references to results
+  if (metadataComponents.length > 0 || preDetectedCodeReferences.length > 0) {
+    const preDetectedResult = {
       ai_components_detected: metadataComponents,
       security_risks: [],
-      code_references: [],
+      code_references: preDetectedCodeReferences,
       confidence_score: 0.98,
       remediation_suggestions: []
     };
-    allAnalysisResults.push(metadataResult);
+    allAnalysisResults.push(preDetectedResult);
   }
   
   // Consolidate all batch results
@@ -267,18 +306,57 @@ async function analyzeRepositoryWithOpenAI(
   
   // Adjust confidence score based on detected components
   if (consolidatedResults.ai_components_detected.length > 0) {
-    consolidatedResults.confidence_score = Math.max(
-      consolidatedResults.confidence_score,
-      0.7 + Math.min(0.28, consolidatedResults.ai_components_detected.length * 0.04)
+    // Base confidence on number and types of components
+    let confBoost = Math.min(0.4, consolidatedResults.ai_components_detected.length * 0.05);
+    
+    // Extra boost for RAG components
+    const hasRagComponents = consolidatedResults.ai_components_detected.some(comp => 
+      ['Vector Database', 'RAG Framework', 'Embedding Model'].includes(comp.type)
     );
+    
+    // Extra boost for code references that directly implement AI
+    const hasAiImplementations = consolidatedResults.code_references.length > 0;
+    
+    if (hasRagComponents) confBoost += 0.1;
+    if (hasAiImplementations) confBoost += 0.1;
+    
+    // If we have both RAG libraries in metadata AND code that implements it, max out confidence
+    if (hasRagComponents && 
+        consolidatedResults.code_references.some(ref => 
+          ref.snippet.includes('chroma') || 
+          ref.snippet.includes('embedding') || 
+          ref.snippet.includes('vector') ||
+          ref.snippet.includes('pinecone') ||
+          ref.snippet.includes('qdrant') ||
+          ref.snippet.includes('weaviate')
+        )) {
+      consolidatedResults.confidence_score = 0.95;
+    } else {
+      consolidatedResults.confidence_score = Math.max(
+        consolidatedResults.confidence_score,
+        0.6 + confBoost
+      );
+    }
   }
   
   return consolidatedResults;
 }
 
-// Helper function to extract AI components from metadata files
-function extractAIComponentsFromMetadata(files: {path: string, content: string}[]): any[] {
-  const aiComponents: {name: string, type: string, confidence: number}[] = [];
+// Helper function to analyze files before sending to OpenAI
+function preAnalyzeRepositoryFiles(files: {path: string, content: string}[]): {
+  metadataComponents: any[],
+  preDetectedCodeReferences: any[]
+} {
+  const metadataComponents: {name: string, type: string, confidence: number}[] = [];
+  const preDetectedCodeReferences: {
+    id: string,
+    file: string,
+    line: number,
+    snippet: string,
+    verified: boolean
+  }[] = [];
+  
+  // AI libraries to detect in metadata
   const aiLibraries = [
     // General AI/ML
     {name: 'tensorflow', display: 'TensorFlow', type: 'ML Framework'},
@@ -311,10 +389,15 @@ function extractAIComponentsFromMetadata(files: {path: string, content: string}[
     
     // Vector DBs
     {name: 'faiss', display: 'FAISS', type: 'Vector Database'},
+    {name: 'faiss-cpu', display: 'FAISS (CPU)', type: 'Vector Database'},
+    {name: 'faiss-gpu', display: 'FAISS (GPU)', type: 'Vector Database'},
     {name: 'pinecone', display: 'Pinecone', type: 'Vector Database'},
     {name: 'chroma', display: 'ChromaDB', type: 'Vector Database'},
+    {name: 'chromadb', display: 'ChromaDB', type: 'Vector Database'},
     {name: 'qdrant', display: 'Qdrant', type: 'Vector Database'},
+    {name: 'qdrant-client', display: 'Qdrant', type: 'Vector Database'},
     {name: 'weaviate', display: 'Weaviate', type: 'Vector Database'},
+    {name: 'weaviate-client', display: 'Weaviate', type: 'Vector Database'},
     {name: 'milvus', display: 'Milvus', type: 'Vector Database'},
     {name: 'pgvector', display: 'PGVector', type: 'Vector Extension'},
     
@@ -333,58 +416,143 @@ function extractAIComponentsFromMetadata(files: {path: string, content: string}[
     {name: '@langchain', display: 'LangChain.js', type: 'LLM Framework'}
   ];
   
+  // Process each file
+  let refIdCounter = 1;
+  
   for (const file of files) {
-    // Skip non-metadata files
-    if (!isMetadataFile(file.path)) continue;
-    
-    const content = file.content;
-    
-    if (file.path.endsWith('requirements.txt') || file.path.endsWith('Pipfile') || file.path.endsWith('pyproject.toml')) {
-      // Python dependencies
-      for (const lib of aiLibraries) {
-        const regex = new RegExp(`(?:^|\\n|\\r)${lib.name}(?:[=><~\\[\\s]|$)`, 'i');
-        if (regex.test(content)) {
-          aiComponents.push({
-            name: lib.display,
-            type: lib.type,
-            confidence: 0.98
-          });
-        }
-      }
-    } else if (file.path.endsWith('package.json')) {
-      // JavaScript dependencies
-      try {
-        const packageJson = JSON.parse(content);
-        const dependencies = {
-          ...(packageJson.dependencies || {}),
-          ...(packageJson.devDependencies || {})
-        };
-        
-        for (const [dep, version] of Object.entries(dependencies)) {
-          for (const lib of aiLibraries) {
-            if (dep === lib.name || dep.includes(lib.name)) {
-              aiComponents.push({
-                name: lib.display,
-                type: lib.type,
-                confidence: 0.98
-              });
-              break;
-            }
+    // First, check metadata files
+    if (isMetadataFile(file.path)) {
+      const content = file.content;
+      
+      if (file.path.endsWith('requirements.txt') || file.path.endsWith('Pipfile') || file.path.endsWith('pyproject.toml')) {
+        // Python dependencies
+        for (const lib of aiLibraries) {
+          const regex = new RegExp(`(?:^|\\n|\\r)${lib.name}(?:[=><~\\[\\s]|$)`, 'i');
+          if (regex.test(content)) {
+            metadataComponents.push({
+              name: lib.display,
+              type: lib.type,
+              confidence: 0.98
+            });
           }
         }
-      } catch (e) {
-        // Handle JSON parse error
-        console.error(`Error parsing package.json: ${e}`);
+      } else if (file.path.endsWith('package.json')) {
+        // JavaScript dependencies
+        try {
+          const packageJson = JSON.parse(content);
+          const dependencies = {
+            ...(packageJson.dependencies || {}),
+            ...(packageJson.devDependencies || {})
+          };
+          
+          for (const [dep, version] of Object.entries(dependencies)) {
+            for (const lib of aiLibraries) {
+              if (dep === lib.name || dep.includes(lib.name)) {
+                metadataComponents.push({
+                  name: lib.display,
+                  type: lib.type,
+                  confidence: 0.98
+                });
+                break;
+              }
+            }
+          }
+        } catch (e) {
+          // Handle JSON parse error
+          console.error(`Error parsing package.json: ${e}`);
+        }
+      }
+    } 
+    // Then check for direct implementation of RAG in code
+    else if (file.path.endsWith('.py') || file.path.endsWith('.js') || file.path.endsWith('.ts')) {
+      const content = file.content;
+      const lines = content.split('\n');
+      
+      // Look for known RAG imports and implementations
+      const ragPatterns = [
+        { pattern: /import\s+chroma/i, type: 'ChromaDB Vector Database Import' },
+        { pattern: /from\s+chromadb/i, type: 'ChromaDB Vector Database Import' },
+        { pattern: /import\s+pinecone/i, type: 'Pinecone Vector Database Import' },
+        { pattern: /from\s+pinecone/i, type: 'Pinecone Vector Database Import' },
+        { pattern: /import\s+qdrant/i, type: 'Qdrant Vector Database Import' },
+        { pattern: /from\s+qdrant/i, type: 'Qdrant Vector Database Import' },
+        { pattern: /import\s+weaviate/i, type: 'Weaviate Vector Database Import' },
+        { pattern: /from\s+weaviate/i, type: 'Weaviate Vector Database Import' },
+        { pattern: /import\s+faiss/i, type: 'FAISS Vector Library Import' },
+        { pattern: /from\s+faiss/i, type: 'FAISS Vector Library Import' },
+        { pattern: /embedding_functions/i, type: 'Embedding Function Implementation' },
+        { pattern: /embeddings/i, type: 'Embedding Implementation' },
+        { pattern: /sentence_transformers/i, type: 'Sentence Transformers Import' },
+        { pattern: /from\s+langchain/i, type: 'LangChain Import' },
+        { pattern: /import\s+langchain/i, type: 'LangChain Import' },
+        { pattern: /from\s+llama_index/i, type: 'LlamaIndex RAG Import' },
+        { pattern: /import\s+llama_index/i, type: 'LlamaIndex RAG Import' },
+        { pattern: /createVectorStore/i, type: 'Vector Store Creation' },
+        { pattern: /VectorDBQA/i, type: 'Vector Database Question Answering' },
+        { pattern: /retriever/i, type: 'Document Retriever Implementation' },
+        { pattern: /RetrievalQA/i, type: 'Retrieval QA Implementation' }
+      ];
+      
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        
+        for (const { pattern, type } of ragPatterns) {
+          if (pattern.test(line)) {
+            // Get a few lines of context
+            const startLine = Math.max(0, i - 1);
+            const endLine = Math.min(lines.length - 1, i + 1);
+            const snippetLines = lines.slice(startLine, endLine + 1);
+            const snippet = snippetLines.join('\n');
+            
+            // Create a code reference
+            preDetectedCodeReferences.push({
+              id: `pre-ref-${refIdCounter++}`,
+              file: file.path,
+              line: i + 1, // 1-based line numbering
+              snippet,
+              verified: true
+            });
+            
+            // Also add as a component if not already detected
+            const componentName = type.replace(' Import', '').replace(' Implementation', '');
+            const existingComponent = metadataComponents.find(c => c.name === componentName);
+            
+            if (!existingComponent) {
+              // Determine component type
+              let compType = 'AI Library';
+              if (type.includes('Vector Database')) compType = 'Vector Database';
+              else if (type.includes('Embedding')) compType = 'Embedding Model';
+              else if (type.includes('RAG') || type.includes('Retrieval')) compType = 'RAG Framework';
+              else if (type.includes('LangChain')) compType = 'LLM Framework';
+              
+              metadataComponents.push({
+                name: componentName,
+                type: compType,
+                confidence: 0.95
+              });
+            }
+            
+            break; // Only process one pattern per line
+          }
+        }
       }
     }
   }
   
-  // Remove duplicates
-  const uniqueComponents = aiComponents.filter((comp, index, self) =>
+  // Remove duplicates from components
+  const uniqueComponents = metadataComponents.filter((comp, index, self) =>
     index === self.findIndex((c) => c.name === comp.name)
   );
   
-  return uniqueComponents;
+  // Remove any duplicate references
+  const uniqueReferences = preDetectedCodeReferences.filter((ref, index, self) =>
+    index === self.findIndex((r) => r.file === ref.file && r.line === ref.line)
+  );
+  
+  return {
+    metadataComponents: uniqueComponents,
+    preDetectedCodeReferences: uniqueReferences
+  };
 }
 
 function isMetadataFile(path: string): boolean {
@@ -648,6 +816,8 @@ serve(async (req) => {
       Only identify verifiable patterns in the actual code provided. Never invent or hallucinate file paths or code snippets.
       Assign each code reference a unique ID starting with "ref-" followed by a number.
       Include "related_code_references" arrays in security risks containing the IDs of relevant code references.
+      
+      If you find code that directly implements RAG patterns (using vector databases with LLMs), consider this a high-confidence finding.
     `;
     
     const analysis = await analyzeRepositoryWithOpenAI(repoFiles, systemPrompt);
