@@ -112,13 +112,12 @@ const ReportResults = ({ report }: ReportResultsProps) => {
         fileName.endsWith('.java') || 
         fileName.endsWith('.go');
       
-      // LLM-related patterns for prompt injection
+      // LLM-related patterns for prompt injection - ONLY industry standard terms
       const llmKeywords = [
         'llm', 'chat', 'ai', 'bot', 'gpt', 'openai', 'prompt', 'claude', 'anthropic', 
         'mistral', 'gemini', 'langchain', 'completion', 'model', 'assistant', 'language model',
         'token', 'generate', 'huggingface', 'inference', 'agent', 'transformer', 'bert', 'dalle', 
-        'diffusion', 'stable diffusion', 'whisper', 'phi', 'llama', 'davinci', 'turbo', 'kagentic',
-        'autogen', 'agentic', 'rag', 'agent', 'multiagent', 'autonomous'
+        'diffusion', 'stable diffusion', 'whisper', 'phi', 'llama', 'davinci', 'turbo'
       ];
       
       // Check if any LLM keyword is in the file name or snippet
@@ -126,11 +125,11 @@ const ReportResults = ({ report }: ReportResultsProps) => {
         llmKeywords.some(keyword => fileName.includes(keyword)) || 
         llmKeywords.some(keyword => snippet.includes(keyword));
       
-      // RAG/Vector DB patterns for data leakage
+      // RAG/Vector DB patterns for data leakage - ONLY industry standard terms
       const ragKeywords = [
         'rag', 'vector', 'embed', 'chromadb', 'pinecone', 'weaviate', 'qdrant', 'faiss',
         'index', 'search', 'retrieval', 'retriever', 'retrieve', 'document', 'knowledge', 
-        'database', 'store', 'langchain', 'llamaindex', 'llama-index'
+        'database', 'store', 'langchain', 'llamaindex', 'semantic'
       ];
       
       // Check if any RAG keyword is in the file name or snippet
@@ -138,30 +137,27 @@ const ReportResults = ({ report }: ReportResultsProps) => {
         ragKeywords.some(keyword => fileName.includes(keyword)) || 
         ragKeywords.some(keyword => snippet.includes(keyword));
       
-      // API key patterns
+      // API key patterns - generic credential patterns
       const apiKeyKeywords = [
         'api_key', 'apikey', 'api-key', 'secret', 'token', 'password', 'credential', 
-        'auth', 'key', 'openai.api_key', 'OPENAI_API_KEY', 'SK-', '.env', 'config', 
-        'environment', 'private'
+        'auth', 'key', 'api_token', 'access_token', 'oauth', 'bearer', '.env'
       ];
       
       // Check if any API key keyword is in the snippet
       const isApiKeyRelated = apiKeyKeywords.some(keyword => snippet.includes(keyword));
       
-      // Auto-categorize any code file as potentially LLM-related if it's not yet categorized
-      // and contains certain programming patterns commonly used in AI
+      // Generic AI code patterns - common in AI implementations but not specific to any framework
       const aiPatterns = [
-        'import', 'from', 'class', 'function', 'def ', 'async', 'await', 'response', 
-        'request', 'api', 'http', 'fetch', 'axios', '.then', '.post', '.get', 'json'
+        'api', 'http', 'fetch', 'axios', 'response', 'request',
+        'temperature', 'max_tokens', 'top_p', 'frequency_penalty', 'presence_penalty',
+        'system message', 'user message', 'conversation', 'context'
       ];
       
-      // For repositories known to be AI-focused (like kagentic), be more aggressive in categorization
+      // Is this likely AI-related code based on generic patterns?
       const isLikelyAICode = isCodeFile && 
         (isLlmRelated || isRagRelated || 
-         (aiPatterns.some(pattern => snippet.includes(pattern)) && 
-          (report.confidence_score > 0.7 || // High confidence this is an AI repo
-           fileName.includes('agent') || 
-           fileName.includes('tool'))));
+         (report.confidence_score > 0.7 && // High confidence this is an AI repo
+          aiPatterns.some(pattern => snippet.includes(pattern))));
       
       // Associate with prompt injection risk if LLM related
       if (promptInjectionRisk && (isLlmRelated || isLikelyAICode)) {
