@@ -17,7 +17,7 @@ const ReportResults = ({ report }: ReportResultsProps) => {
   // Filter out unverified code references
   const verifiedCodeReferences = report.code_references.filter(ref => ref.verified === true);
   
-  // Enhance the report by filling in missing connections
+  // Enhance the report by filling in missing connections and detecting hardcoded system prompts
   const enhancedSecurityRisks = enhanceCodeReferences(
     report.security_risks,
     verifiedCodeReferences,

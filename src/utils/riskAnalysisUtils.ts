@@ -1,5 +1,6 @@
 
 import { CodeReference, SecurityRisk, AIComponent } from "@/types/reportTypes";
+import { extractPromptsFromCode, createSystemPromptRisk } from "./promptDetectionUtils";
 
 // Get the code references for a specific security risk using the IDs
 export const getRelatedCodeReferences = (
@@ -25,6 +26,7 @@ export const getRelatedAIComponents = (
     "hallucination": ["LLM Provider", "LLM Framework", "Local LLM"],
     "api key exposure": ["LLM Provider", "Vector Database"],
     "model poisoning": ["LLM Provider", "LLM Framework", "ML Framework"],
+    "hardcoded system prompts": ["LLM Provider", "LLM Framework", "Local LLM"],
   };
 
   // Find the matching risk pattern
@@ -60,6 +62,25 @@ export const getUnrelatedCodeReferences = (
   );
 
   return verifiedCodeReferences.filter((ref) => !allRiskRefIds.has(ref.id));
+};
+
+// Process code references to detect hardcoded system prompts
+export const detectSystemPrompts = (codeReferences: CodeReference[]): {
+  promptRisk: SecurityRisk | null;
+  promptReferences: CodeReference[];
+} => {
+  const promptReferences: CodeReference[] = [];
+  
+  // Analyze each code reference for potential hardcoded prompts
+  codeReferences.forEach(ref => {
+    const extractedPrompts = extractPromptsFromCode(ref.snippet, ref.file);
+    promptReferences.push(...extractedPrompts);
+  });
+  
+  // Create a security risk if prompts were found
+  const promptRisk = createSystemPromptRisk(promptReferences);
+  
+  return { promptRisk, promptReferences };
 };
 
 // Map risk types to OWASP LLM Top 10 categories (2025 version)
@@ -154,6 +175,11 @@ const owaspCategoryMap: Record<string, { id: string; name: string; description: 
     id: "LLM08:2025",
     name: "Vector and Embedding Weaknesses",
     description: "Security risks associated with the use of vectors and embeddings in LLM systems."
+  },
+  "hardcoded system prompts": {
+    id: "LLM07:2025",
+    name: "System Prompt Leakage",
+    description: "The exposure of system-level prompts that can reveal internal configurations or logic."
   }
 };
 
@@ -170,7 +196,39 @@ export const enhanceCodeReferences = (
     hallucination: "hallucination",
     apiKeyExposure: "api key exposure",
     modelPoisoning: "model poisoning",
+    systemPromptLeakage: "hardcoded system prompts",
   };
+
+  // Process code references to detect hardcoded system prompts
+  const { promptRisk, promptReferences } = detectSystemPrompts(verifiedCodeReferences);
+  
+  // Add system prompt risk if detected
+  if (promptRisk) {
+    const existingPromptRisk = securityRisks.find(risk => 
+      risk.risk.toLowerCase().includes(riskTypes.systemPromptLeakage)
+    );
+    
+    if (existingPromptRisk) {
+      // Update existing risk with new references
+      existingPromptRisk.related_code_references = [
+        ...new Set([
+          ...(existingPromptRisk.related_code_references || []),
+          ...promptRisk.related_code_references
+        ])
+      ];
+    } else {
+      // Add new risk
+      securityRisks.push(promptRisk);
+    }
+    
+    // Add prompt references to verified code references if they don't already exist
+    const existingIds = new Set(verifiedCodeReferences.map(ref => ref.id));
+    promptReferences.forEach(ref => {
+      if (!existingIds.has(ref.id)) {
+        verifiedCodeReferences.push(ref);
+      }
+    });
+  }
 
   // Add OWASP categories to security risks if they don't have them
   securityRisks.forEach(risk => {

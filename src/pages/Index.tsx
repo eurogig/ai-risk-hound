@@ -65,6 +65,12 @@ const Index = () => {
             3. If uncertain about specific files, focus on identifying patterns and general concerns instead.
             4. If you cannot find specific code references, leave that section empty rather than making suggestions.
             
+            IMPORTANT: Look carefully for HARDCODED SYSTEM PROMPTS in Python, TypeScript, and JavaScript files:
+            - Check for string assignments like SYSTEM_PROMPT = "You are an AI assistant..."
+            - Check for hardcoded function arguments like messages=[{"role": "system", "content": "You are helpful."}]
+            - These are security risks because they can leak information or be manipulated
+            - Report them under "System Prompt Leakage" risk category
+            
             IMPORTANT: This repository may have a nested structure. Make sure to:
             - Recursively check all directories and subdirectories
             - Look for all requirements.txt, package.json, or other dependency files in ALL subdirectories
