@@ -1,539 +1,457 @@
-
-// Follow Deno's ES modules approach
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.36.0';
+import "https://deno.land/x/xhr@0.1.0/mod.ts"; // Required for OpenAI API to work
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.7.1';
 
-// Define cors headers for browser requests
+// CORS Headers for allowing frontend access to this function
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// Helper function to check if a string is a valid GitHub URL
-function isValidGitHubUrl(url) {
-  if (!url || typeof url !== 'string') return false;
-  // Simple regex to validate GitHub repository URLs
-  return /^https?:\/\/github\.com\/[^\/]+\/[^\/]+/.test(url);
-}
+// Initialize Supabase client
+const supabaseClient = createClient(
+  Deno.env.get('SUPABASE_URL') ?? '',
+  Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
+);
 
-// Regular expressions for detecting system prompts in code
-const SYSTEM_PROMPT_PATTERNS = [
-  // Direct assignments to variables named like system prompts
-  /(?:const|let|var)\s+(?:SYSTEM_PROMPT|systemPrompt|system_prompt|PROMPT|prompt)\s*=\s*["'`](.+?)["'`]/gs,
-  
-  // OpenAI API calls with system messages
-  /messages\s*=\s*\[\s*\{\s*["']role["']\s*:\s*["']system["']\s*,\s*["']content["']\s*:\s*["'](.+?)["']/gs,
-  /messages\s*:\s*\[\s*\{\s*["']role["']\s*:\s*["']system["']\s*,\s*["']content["']\s*:\s*["'](.+?)["']/gs,
-  
-  // Common pattern with array of messages
-  /\[\s*\{\s*["']role["']\s*:\s*["']system["']\s*,\s*["']content["']\s*:\s*["'](.+?)["']/gs,
-  
-  // Python format with triple quotes
-  /SYSTEM_PROMPT\s*=\s*["']{3}([\s\S]+?)["']{3}/gs,
-  
-  // LangChain system message templates
-  /SystemMessagePromptTemplate\.from_template\(["'`](.+?)["'`]\)/gs,
-  
-  // HuggingFace pipeline with system prompt
-  /pipeline\(\s*[^)]*\s*system_prompt\s*=\s*["'`](.+?)["'`]/gs
-];
-
-// Main function to analyze GitHub repositories
+// Serve the HTTP request
 serve(async (req) => {
+  console.log(`Starting repository analysis...`);
+
   // Handle CORS preflight requests
   if (req.method === 'OPTIONS') {
-    return new Response(null, { headers: corsHeaders });
+    return new Response('ok', { headers: corsHeaders });
   }
 
   try {
-    // Parse the request body
-    const requestData = await req.json();
+    // Get request data
+    const { repositoryUrl, apiKey, options, debugMode } = await req.json();
     
-    // Validate repository URL
-    const { repositoryUrl, apiKey, options, debugMode } = requestData;
-    
-    console.log(`Processing repository: ${repositoryUrl}\n`);
-    
+    // Validate required parameters
     if (!repositoryUrl) {
-      throw new Error("Repository URL is required");
+      throw new Error('Repository URL is required');
     }
     
-    if (!isValidGitHubUrl(repositoryUrl)) {
-      throw new Error("Invalid GitHub repository URL format");
+    if (!apiKey) {
+      throw new Error('OpenAI API key is required');
     }
 
-    if (!apiKey) {
-      throw new Error("OpenAI API key is required");
+    // Validate GitHub URL format
+    const isValidGithubUrl = /https?:\/\/github\.com\/[^\/]+\/[^\/]+/.test(repositoryUrl);
+    if (!isValidGithubUrl) {
+      throw new Error('Invalid GitHub repository URL');
+    }
+
+    console.log(`Repository URL validated: ${repositoryUrl}`);
+    
+    // Extract repository info from URL
+    const urlMatch = repositoryUrl.match(/github\.com\/([^\/]+)\/([^\/]+)/);
+    if (!urlMatch) {
+      throw new Error('Failed to parse GitHub repository URL');
     }
     
-    // Construct the GitHub API URL for the repository
-    const repoUrlParts = repositoryUrl.replace(/\/$/, '').split('/');
-    const owner = repoUrlParts[repoUrlParts.length - 2];
-    const repo = repoUrlParts[repoUrlParts.length - 1];
+    const owner = urlMatch[1];
+    let repo = urlMatch[2];
     
-    // Repository API URL
-    const githubApiUrl = `https://api.github.com/repos/${owner}/${repo}`;
-    
-    // Start collecting debug information
-    const debugInfo = debugMode ? {
-      owner,
-      repo,
-      api_url: githubApiUrl,
-      analysis_timestamps: {},
-      rate_limit_info: null,
-      file_count: 0,
-      extensions_found: {},
-      ai_libraries_found: [],
-      errors: [],
-    } : null;
-    
-    // Fetch repository metadata
-    const repoResponse = await fetch(githubApiUrl, {
-      headers: {
-        'Accept': 'application/vnd.github.v3+json',
-        'User-Agent': 'RiskRover-Analysis-Tool',
-      }
-    });
-    
-    if (!repoResponse.ok) {
-      if (repoResponse.status === 404) {
-        throw new Error("Repository not found. It may be private or doesn't exist.");
-      } else if (repoResponse.status === 403) {
-        const resetTime = repoResponse.headers.get('X-RateLimit-Reset');
-        const resetDate = resetTime ? new Date(parseInt(resetTime) * 1000).toLocaleString() : 'unknown time';
-        throw new Error(`GitHub API rate limit exceeded. Resets at ${resetDate}`);
-      } else {
-        throw new Error(`GitHub API error: ${repoResponse.status} ${repoResponse.statusText}`);
-      }
+    // Remove .git suffix if present
+    if (repo.endsWith('.git')) {
+      repo = repo.slice(0, -4);
     }
-    
-    const repoData = await repoResponse.json();
-    
-    if (debugInfo) {
-      debugInfo.repo_info = {
-        name: repoData.name,
-        description: repoData.description,
-        default_branch: repoData.default_branch,
-        stars: repoData.stargazers_count,
-        forks: repoData.forks_count,
-        size: repoData.size,
-        created_at: repoData.created_at,
-        updated_at: repoData.updated_at,
-      };
-      debugInfo.analysis_timestamps.start = new Date().toISOString();
+
+    // Extract branch from URL if present, otherwise default to main/master
+    let branch = "main"; // Default to main
+    const branchMatch = repositoryUrl.match(/\/tree\/([^\/]+)/);
+    if (branchMatch) {
+      branch = branchMatch[1];
     }
+
+    const repositoryData = await fetchRepositoryData(owner, repo, branch);
     
-    // Get repository contents recursively
-    const allFiles = await fetchAllRepoContents(owner, repo, repoData.default_branch);
+    console.log(`Successfully fetched repository data for ${owner}/${repo}`);
     
-    if (debugInfo) {
-      debugInfo.file_count = allFiles.length;
-      // Count file extensions
-      allFiles.forEach(file => {
-        const extension = file.name.split('.').pop() || 'no-extension';
-        debugInfo.extensions_found[extension] = (debugInfo.extensions_found[extension] || 0) + 1;
-      });
-    }
-    
-    // Start collecting repository data
-    const codeFiles = allFiles.filter(file => 
-      file.type === 'file' && 
-      !file.path.includes('node_modules/') && 
-      !file.path.includes('venv/') &&
-      !file.path.includes('.git/')
-    );
-    
-    // Analyze code files content (batch processing to avoid rate limits)
-    const codeReferences = [];
-    const batchSize = 5;
-    
-    for (let i = 0; i < codeFiles.length; i += batchSize) {
-      const batch = codeFiles.slice(i, i + batchSize);
-      const batchPromises = batch.map(async (file) => {
-        try {
-          // Download file content
-          const fileUrl = file.download_url;
-          if (!fileUrl) return null; // Skip if no download URL
-            
-          const fileResponse = await fetch(fileUrl, {
-            headers: {
-              'Accept': 'application/vnd.github.v3.raw',
-              'User-Agent': 'RiskRover-Analysis-Tool',
-            }
-          });
-            
-          if (!fileResponse.ok) {
-            if (debugInfo) {
-              debugInfo.errors.push(`Failed to fetch ${file.path}: ${fileResponse.status}`);
-            }
-            return null;
-          }
-            
-          const content = await fileResponse.text();
-          
-          // Process the file content for both AI libraries and system prompts
-          const fileReferences = [];
-  
-          // Check for system prompts in the content
-          let promptMatches = findSystemPrompts(content, file.path);
-          if (promptMatches.length > 0) {
-            fileReferences.push(...promptMatches);
-          }
-  
-          // Only return if we have references
-          if (fileReferences.length > 0) {
-            return {
-              file: file.path,
-              content: content.length > 500 ? content.substring(0, 500) + '...' : content,
-              references: fileReferences
-            };
-          }
-          
-          // If no matching patterns, return basic file info for further analysis
-          return {
-            file: file.path,
-            content: content.length > 500 ? content.substring(0, 500) + '...' : content,
-            references: []
-          };
-  
-        } catch (error) {
-          if (debugInfo) {
-            debugInfo.errors.push(`Error processing ${file.path}: ${error.message}`);
-          }
-          console.error(`Error processing ${file.path}:`, error);
-          return null;
+    let debug = {};
+    if (debugMode) {
+      debug = {
+        repo_data: {
+          owner,
+          repo,
+          branch,
+          file_count: repositoryData.length
         }
-      });
-        
-      const batchResults = await Promise.all(batchPromises);
-      codeReferences.push(...batchResults.filter(Boolean));
-        
-      // Slight delay to avoid hitting rate limits
-      if (i + batchSize < codeFiles.length) {
-        await new Promise(resolve => setTimeout(resolve, 1000));
-      }
+      };
     }
     
-    // Extract file content to analyze through OpenAI
-    const filesToAnalyze = codeReferences.map(ref => ({
-      file: ref.file,
-      content: ref.content,
-      references: ref.references
-    }));
-    
-    let analysis;
-    try {
-      if (debugInfo) {
-        debugInfo.analysis_timestamps.openai_start = new Date().toISOString();
+    // Add hardcoded system prompt detection
+    const { promptResults, promptRisk } = detectSystemPrompts(repositoryData);
+    if (promptResults.length > 0) {
+      console.log(`Detected ${promptResults.length} potential hardcoded system prompts`);
+      if (debugMode) {
+        debug = {
+          ...debug,
+          prompt_detection: {
+            count: promptResults.length,
+            files: promptResults.map(r => r.file)
+          }
+        };
       }
-      
-      // Prepare system prompt with user's custom additions if provided
-      const systemPromptBase = options?.systemPrompt || 
-        `Analyze the GitHub repository and provide insights about AI components and security risks.`;
-      
-      // Generate repository analysis with OpenAI
-      analysis = await analyzeRepositoryWithOpenAI(
-        apiKey, 
-        {
-          repositoryUrl, 
-          repoInfo: repoData, 
-          files: filesToAnalyze
-        },
-        systemPromptBase
+    }
+
+    // Process repository content
+    const prompt = buildPrompt(repositoryData, options?.systemPrompt);
+    const response = await analyzeWithOpenAI(prompt, apiKey);
+    
+    // Parse the response into a structured report
+    let report;
+    try {
+      report = JSON.parse(response);
+    } catch (parseError) {
+      console.error('Error parsing OpenAI response:', parseError);
+      throw new Error('Failed to parse AI analysis. The response was not valid JSON.');
+    }
+    
+    // Add the hardcoded system prompt risk to the report if found
+    if (promptRisk && promptResults.length > 0) {
+      // Check if there's already a system prompt risk in the report
+      const existingPromptRisk = report.security_risks?.find(risk => 
+        risk.risk?.toLowerCase().includes('system prompt') || 
+        risk.risk?.toLowerCase().includes('prompt leakage')
       );
       
-      if (debugInfo) {
-        debugInfo.analysis_timestamps.openai_end = new Date().toISOString();
+      if (existingPromptRisk) {
+        // Merge the detected prompt references with the existing risk
+        existingPromptRisk.related_code_references = [
+          ...(existingPromptRisk.related_code_references || []),
+          ...promptRisk.related_code_references
+        ];
+      } else {
+        // Add the new risk to the report
+        report.security_risks = report.security_risks || [];
+        report.security_risks.push(promptRisk);
       }
-    } catch (error) {
-      console.error("OpenAI analysis error:", error);
       
-      if (debugInfo) {
-        debugInfo.errors.push(`OpenAI analysis failed: ${error.message}`);
-      }
-      
-      throw new Error(`Analysis failed: ${error.message}`);
+      // Add the prompt references to the code references
+      report.code_references = report.code_references || [];
+      report.code_references.push(...promptResults);
     }
     
-    // Combine analysis with code references
-    const result = {
-      repository_url: repositoryUrl,
-      repository_info: {
-        name: repoData.name,
-        description: repoData.description,
-        stars: repoData.stargazers_count,
-        forks: repoData.forks_count,
-      },
-      ...analysis
-    };
-    
-    // Add debug information if requested
-    if (debugInfo) {
-      debugInfo.analysis_timestamps.end = new Date().toISOString();
-      result.debug = debugInfo;
-    }
-    
+    // Return the analysis result
     return new Response(
-      JSON.stringify(result),
+      JSON.stringify({
+        ...report,
+        debug: debugMode ? debug : undefined
+      }),
       { 
-        headers: {
-          'Content-Type': 'application/json',
-          ...corsHeaders
+        headers: { 
+          ...corsHeaders,
+          'Content-Type': 'application/json'
         } 
       }
     );
   } catch (error) {
-    console.error(`Error analyzing repository:`, error);
+    console.error('Error in analyze-repository function:', error);
     
     return new Response(
       JSON.stringify({ 
-        error: error.message || "Unknown error occurred"
+        error: error.message || 'Failed to analyze repository'
       }),
       { 
-        status: 500,
-        headers: {
-          'Content-Type': 'application/json',
-          ...corsHeaders
+        status: 400,
+        headers: { 
+          ...corsHeaders,
+          'Content-Type': 'application/json'
         } 
       }
     );
   }
 });
 
-// Helper function to find system prompts in code content
-function findSystemPrompts(content, filePath) {
-  const matches = [];
+// The helper functions:
+// These are the core functions that do the actual work
+
+// Function to download repository contents
+async function fetchRepositoryData(owner: string, repo: string, branch: string) {
+  console.log(`Fetching repository data for ${owner}/${repo}:${branch}`);
   
-  // Apply all regex patterns to find potential system prompts
-  for (const pattern of SYSTEM_PROMPT_PATTERNS) {
-    let match;
-    while ((match = pattern.exec(content)) !== null) {
-      if (match[1] && match[1].length > 10) { // Only consider non-trivial prompts
-        // Extract a snippet of code around the match for context
-        const startPos = Math.max(0, match.index - 50);
-        const endPos = Math.min(content.length, match.index + match[0].length + 50);
-        const contextCode = content.substring(startPos, endPos);
+  const apiUrl = `https://api.github.com/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`;
+  const response = await fetch(apiUrl, {
+    headers: {
+      'Accept': 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      'User-Agent': 'RiskRover-Analyzer'
+    }
+  });
+  
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error(`GitHub API error: ${response.status} ${errorText}`);
+    throw new Error(`Failed to fetch repository data: ${response.status} ${response.statusText}`);
+  }
+  
+  const data = await response.json();
+  if (!data.tree) {
+    throw new Error('Repository structure not found');
+  }
+  
+  const fileData = [];
+  
+  // Filter to only include relevant files
+  const relevantFiles = data.tree.filter((item: any) => {
+    return item.type === 'blob' && shouldAnalyzeFile(item.path);
+  });
+  
+  console.log(`Found ${relevantFiles.length} relevant files to analyze`);
+  
+  // Limit the number of files to download to avoid overloading
+  const filesToDownload = relevantFiles.slice(0, 50);
+  
+  // Download all relevant files in parallel
+  const fileDownloadPromises = filesToDownload.map(async (file: any) => {
+    try {
+      const fileContent = await fetchFileContent(owner, repo, file.path, branch);
+      return {
+        path: file.path,
+        content: fileContent,
+      };
+    } catch (error) {
+      console.warn(`Failed to download ${file.path}: ${error.message}`);
+      return null;
+    }
+  });
+  
+  const downloadedFiles = await Promise.all(fileDownloadPromises);
+  
+  // Filter out any failed downloads
+  return downloadedFiles.filter(file => file !== null);
+}
+
+// Helper function to download individual files
+async function fetchFileContent(owner: string, repo: string, path: string, branch: string) {
+  const url = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${path}`;
+  
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch file content: ${response.status}`);
+  }
+  
+  return await response.text();
+}
+
+// Function to build the analysis prompt
+function buildPrompt(repositoryData: any[], systemPrompt?: string) {
+  let filesContent = '';
+  
+  // Add repository structure
+  filesContent += "Repository Structure:\n";
+  filesContent += repositoryData.map(file => `- ${file.path}`).join('\n');
+  filesContent += '\n\n';
+  
+  // Add file contents (limited to keep prompt within token limits)
+  let totalTokenCount = 0;
+  const estimatedTokensPerChar = 0.25; // Rough estimate of tokens per character
+  const maxTokens = 60000; // Maximum tokens to allow in the prompt
+  
+  for (const file of repositoryData) {
+    const estimatedTokens = file.content.length * estimatedTokensPerChar;
+    
+    // Skip this file if adding it would exceed the token limit
+    if (totalTokenCount + estimatedTokens > maxTokens) {
+      filesContent += `Note: Some files were omitted to keep within the token limit.\n`;
+      break;
+    }
+    
+    filesContent += `File: ${file.path}\n`;
+    filesContent += '```\n';
+    filesContent += file.content.slice(0, 25000); // Limit each file to 25000 chars
+    
+    if (file.content.length > 25000) {
+      filesContent += '\n... (file truncated for brevity) ...';
+    }
+    
+    filesContent += '\n```\n\n';
+    
+    totalTokenCount += estimatedTokens;
+  }
+  
+  // Default system prompt if none provided
+  const defaultSystemPrompt = `Analyze the GitHub repository and provide insights about AI components and security risks. 
+  
+  When analyzing repositories:
+  1. Only report code references that you can confirm exist in the repository. 
+  2. Do not invent or hallucinate file paths or code snippets.
+  3. If uncertain about specific files, focus on identifying patterns and general concerns instead.
+  4. If you cannot find specific code references, leave that section empty rather than making suggestions.
+  
+  IMPORTANT: Look carefully for HARDCODED SYSTEM PROMPTS in Python, TypeScript, and JavaScript files.
+  - Check for string assignments like SYSTEM_PROMPT = "You are an AI assistant..."
+  - Check for hardcoded function arguments like messages=[{"role": "system", "content": "You are helpful."}]
+  - These are security risks because they can leak information or be manipulated
+  - Report them under "System Prompt Leakage" risk category
+  
+  Be thorough in your analysis of all AI components and any security issues that may exist.`;
+  
+  const finalSystemPrompt = systemPrompt || defaultSystemPrompt;
+  
+  const prompt = {
+    model: "gpt-4-turbo-preview",
+    messages: [
+      {
+        role: "system",
+        content: finalSystemPrompt
+      },
+      {
+        role: "user",
+        content: `Here's the repository content I'd like you to analyze:\n\n${filesContent}\n\nPlease provide a complete analysis focusing on AI components and security risks, looking especially for hardcoded system prompts. Return your analysis in a structured JSON format with the following fields:
         
-        matches.push({
-          type: "system_prompt",
-          pattern_matched: pattern.toString().replace(/^\/|\/gs$/g, ''),
-          prompt_content: match[1].substring(0, 100) + (match[1].length > 100 ? '...' : ''),
-          code_snippet: contextCode,
-          file: filePath,
-          verified: true
-        });
+        {
+          "confidence_score": number between 0 and 1 representing how confident you are this is an AI repository,
+          "ai_components_detected": [array of objects with name, type, description, libraries_used, feature_function, and key_implementation_details],
+          "security_risks": [array of objects with risk name, severity, description, and related_code_references],
+          "code_references": [array of objects with id, file, line, snippet, and verified flag],
+          "remediation_suggestions": [array of objects with category, type and description]
+        }
+        
+        Begin your response ONLY with the JSON object, without any intro text. Make sure the JSON is valid and properly formatted.`
       }
-    }
-  }
+    ],
+    temperature: 0.0,
+    max_tokens: 4096
+  };
   
-  return matches;
+  return prompt;
 }
 
-// Function to fetch all repository content recursively
-async function fetchAllRepoContents(owner, repo, branch = 'main', path = '') {
-  const apiUrl = path
-    ? `https://api.github.com/repos/${owner}/${repo}/contents/${path}?ref=${branch}`
-    : `https://api.github.com/repos/${owner}/${repo}/contents?ref=${branch}`;
+// Function to send the analysis to OpenAI
+async function analyzeWithOpenAI(prompt: any, apiKey: string) {
+  console.log('Sending analysis request to OpenAI');
   
-  try {
-    const response = await fetch(apiUrl, {
-      headers: {
-        'Accept': 'application/vnd.github.v3+json',
-        'User-Agent': 'RiskRover-Analysis-Tool',
-      }
-    });
-    
-    if (!response.ok) {
-      console.error(`Error fetching repo contents for ${path || 'root'}: ${response.status}`);
-      return [];
-    }
-    
-    const contents = await response.json();
-    
-    // If single file was returned (not array), wrap in array
-    const items = Array.isArray(contents) ? contents : [contents];
-    
-    let allContents = [...items];
-    
-    // Recursively process directories
-    for (const item of items) {
-      if (item.type === 'dir') {
-        const subContents = await fetchAllRepoContents(owner, repo, branch, item.path);
-        allContents = [...allContents, ...subContents];
-      }
-    }
-    
-    return allContents;
-  } catch (error) {
-    console.error(`Error fetching repo contents for ${path || 'root'}:`, error);
-    return [];
-  }
-}
-
-// Function to analyze repository with OpenAI
-async function analyzeRepositoryWithOpenAI(apiKey, repository, systemPrompt) {
-  // Prepare repository data for analysis
-  const { repositoryUrl, repoInfo, files } = repository;
-  
-  // Structured summary of the repository
-  const repoSummary = `
-    Repository: ${repositoryUrl}
-    Name: ${repoInfo.name}
-    Description: ${repoInfo.description || 'No description provided'}
-    Stars: ${repoInfo.stargazers_count}
-    Forks: ${repoInfo.forks_count}
-    
-    Files to analyze (${files.length} files):
-    ${files.map(f => `- ${f.file}`).join('\n')}
-    
-    Code references detected in preliminary scan:
-    ${files.filter(f => f.references.length > 0)
-      .map(f => `- ${f.file}: ${f.references.length} references found`)
-      .join('\n')}
-  `;
-  
-  // Format file content for analysis
-  const filesContent = files.map(file => {
-    // If the file already has references from our preliminary scan (e.g., system prompts)
-    // add them as metadata
-    let referenceInfo = '';
-    if (file.references && file.references.length > 0) {
-      referenceInfo = '\nPreliminary scan found the following references:\n' + 
-        file.references.map(ref => 
-          `- Type: ${ref.type}\n  Content: ${ref.prompt_content || ref.content || 'N/A'}`
-        ).join('\n');
-    }
-    
-    return `
-      File: ${file.file}${referenceInfo}
-      Content:
-      \`\`\`
-      ${file.content}
-      \`\`\`
-    `;
-  }).join('\n\n---\n\n');
-  
-  // Combine all data for analysis
-  const analysisPrompt = `
-    ${repoSummary}
-    
-    Detailed file contents:
-    ${filesContent}
-  `;
-  
-  // Structure for AI components detection
-  const aiComponentsStructure = `
-    Please structure your response as a JSON object with the following format:
-    {
-      "confidence_score": number between 0-100 representing confidence in analysis,
-      "ai_components_detected": [
-        {
-          "component_type": "string (e.g., 'LLM Integration', 'Vector Database', 'Embedding Generation')",
-          "component_name": "string (e.g., 'OpenAI', 'LangChain', 'FAISS')",
-          "description": "string explaining the component",
-          "risk_level": "string (Low, Medium, High)",
-          "files": ["array of file paths where component is used"]
-        }
-      ],
-      "security_risks": [
-        {
-          "risk_type": "string (e.g., 'API Key Leakage', 'System Prompt Leakage')",
-          "description": "string explaining the risk",
-          "severity": "string (Low, Medium, High, Critical)",
-          "location": "string (file path or general)",
-          "recommendation": "string with remediation advice"
-        }
-      ],
-      "code_references": [
-        {
-          "file": "string (file path)",
-          "content": "string (relevant code snippet)",
-          "description": "string explaining what was found",
-          "verified": boolean (whether this reference was actually confirmed in the code)
-        }
-      ],
-      "remediation_suggestions": [
-        "string with specific remediation advice"
-      ]
-    }
-  `;
-  
-  // Call OpenAI API for analysis
-  const openaiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${apiKey}`
     },
-    body: JSON.stringify({
-      model: "gpt-4",
-      messages: [
-        {
-          role: "system",
-          content: `${systemPrompt}
-          
-          You are performing a security and AI component analysis of a GitHub repository.
-          ${aiComponentsStructure}`
-        },
-        {
-          role: "user",
-          content: analysisPrompt
-        }
-      ],
-      temperature: 0.1,
-    })
+    body: JSON.stringify(prompt)
   });
   
-  if (!openaiResponse.ok) {
-    const errorData = await openaiResponse.json();
-    throw new Error(`OpenAI API error: ${errorData.error?.message || openaiResponse.statusText}`);
+  if (!response.ok) {
+    const errorData = await response.text();
+    console.error('OpenAI API error:', errorData);
+    throw new Error(`OpenAI API error: ${response.status} ${response.statusText}`);
   }
   
-  const response = await openaiResponse.json();
+  const data = await response.json();
+  return data.choices[0].message.content;
+}
+
+// Helper function to detect hardcoded system prompts
+function detectSystemPrompts(repositoryData: any[]) {
+  // Regex patterns for detecting hardcoded prompts
+  const PROMPT_PATTERNS = {
+    // Match system prompts in OpenAI API calls and similar patterns
+    OPENAI_SYSTEM: /(\{|\[)\s*["']role["']\s*:\s*["']system["']\s*,\s*["']content["']\s*:\s*["']([^"']+)["']/g,
+    
+    // Match variable assignments for system prompts
+    VARIABLE_ASSIGNMENT: /(const|let|var|SYSTEM_PROMPT|system_prompt|systemPrompt|prompt)\s*=\s*["']([^"']{10,})["']/g,
+    
+    // Match function arguments that might contain prompts
+    FUNCTION_ARGS: /(messages|prompt|system_prompt|systemPrompt)\s*[:=]\s*["']([^"']{10,})["']/g,
+    
+    // Match Python f-strings and multi-line strings
+    PYTHON_STRINGS: /('''|""")([^'"]{10,})('''|""")/g,
+    
+    // Match Python prompt assignments
+    PYTHON_ASSIGNMENT: /(SYSTEM_PROMPT|system_prompt|prompt)\s*=\s*['"]{1,3}([^'"]{10,})['"]{1,3}/g,
+  };
+
+  // Keywords that suggest a string might be a system prompt
+  const PROMPT_KEYWORDS = [
+    'you are', 'assistant', 'your role', 'your task', 'your job',
+    'respond as', 'act as', 'pretend to be', 'behave like',
+    'your purpose is', 'your goal is', 'your objective',
+    'always respond', 'never respond', 'don\'t reveal', 'do not reveal',
+    'instruction', 'guideline', 'do not disclose', 'system prompt',
+    'role play', 'roleplay'
+  ];
+
+  // Function to check if a string contains prompt-like content
+  const isLikelyPrompt = (content: string): boolean => {
+    if (!content || content.length < 20) return false;
+    
+    const lowerContent = content.toLowerCase();
+    return PROMPT_KEYWORDS.some(keyword => lowerContent.includes(keyword.toLowerCase()));
+  };
+
+  const promptResults = [];
   
-  try {
-    // Extract and parse the JSON from the response
-    const content = response.choices[0].message.content;
+  // Process each file in the repository
+  for (const file of repositoryData) {
+    if (!shouldAnalyzeFile(file.path)) continue;
     
-    // Find JSON content (sometimes OpenAI wraps it in markdown code blocks)
-    let jsonMatch = content.match(/```json\n([\s\S]*?)\n```/) || 
-                    content.match(/```\n([\s\S]*?)\n```/) ||
-                    [null, content];
+    const content = file.content;
+    const lineCount = content.split('\n');
     
-    const jsonContent = jsonMatch[1] || content;
-    const parsedResult = JSON.parse(jsonContent);
-    
-    // Add hardcoded system prompt findings from our preliminary scan to the security risks
-    const systemPromptFindings = files
-      .flatMap(file => file.references)
-      .filter(ref => ref.type === "system_prompt");
-    
-    if (systemPromptFindings.length > 0 && !parsedResult.security_risks.some(risk => risk.risk_type === "System Prompt Leakage")) {
-      parsedResult.security_risks.push({
-        risk_type: "System Prompt Leakage",
-        description: "Hardcoded system prompts found in the codebase. These can leak information about your AI system's behavior and potentially be manipulated.",
-        severity: "High",
-        location: systemPromptFindings.map(f => f.file).join(", "),
-        recommendation: "Move system prompts to environment variables or configuration files that are not committed to the repository."
-      });
-      
-      // Also add these to code references
-      systemPromptFindings.forEach(finding => {
-        if (!parsedResult.code_references.some(ref => ref.file === finding.file && ref.content === finding.code_snippet)) {
-          parsedResult.code_references.push({
-            file: finding.file,
-            content: finding.code_snippet,
-            description: "Contains hardcoded system prompt: " + finding.prompt_content,
+    // Function to process regex matches
+    const processMatches = (regex: RegExp, promptGroupIndex: number) => {
+      let match;
+      while ((match = regex.exec(content)) !== null) {
+        const promptContent = match[promptGroupIndex];
+        
+        // Only consider strings that are likely to be prompts
+        if (isLikelyPrompt(promptContent)) {
+          // Calculate line number by counting newlines before the match
+          const upToMatch = content.substring(0, match.index);
+          const lineNumber = upToMatch.split('\n').length;
+          
+          // Get a snippet with context (up to 3 lines before and after)
+          const startLine = Math.max(0, lineNumber - 3);
+          const endLine = Math.min(lineCount.length, lineNumber + 3);
+          const snippet = lineCount.slice(startLine, endLine).join('\n');
+          
+          promptResults.push({
+            id: `${file.path}-${lineNumber}-${promptResults.length}`,
+            file: file.path,
+            line: lineNumber,
+            prompt: promptContent.substring(0, 150) + (promptContent.length > 150 ? '...' : ''),
+            snippet: snippet,
             verified: true
           });
         }
-      });
-    }
+      }
+    };
     
-    return parsedResult;
-  } catch (error) {
-    console.error("Error parsing OpenAI response:", error);
-    console.error("Response content:", response.choices[0].message.content);
-    throw new Error("Failed to parse analysis results from OpenAI");
+    // Process each regex pattern
+    processMatches(PROMPT_PATTERNS.OPENAI_SYSTEM, 2);
+    processMatches(PROMPT_PATTERNS.VARIABLE_ASSIGNMENT, 2);
+    processMatches(PROMPT_PATTERNS.FUNCTION_ARGS, 2);
+    processMatches(PROMPT_PATTERNS.PYTHON_STRINGS, 2);
+    processMatches(PROMPT_PATTERNS.PYTHON_ASSIGNMENT, 2);
   }
+  
+  // Create a security risk object if prompts were found
+  const promptRisk = promptResults.length > 0 ? {
+    risk: "Hardcoded System Prompts",
+    severity: "Medium",
+    description: "Hardcoded system prompts were detected in the codebase. These may leak sensitive information about the application logic or create security vulnerabilities through prompt injection attacks.",
+    related_code_references: promptResults.map(ref => ref.id),
+    owasp_category: {
+      id: "LLM07:2025",
+      name: "System Prompt Leakage",
+      description: "The exposure of system-level prompts that can reveal internal configurations or logic."
+    }
+  } : null;
+  
+  return { promptResults, promptRisk };
+}
+
+// Helper function to determine if a file should be analyzed
+function shouldAnalyzeFile(filePath: string): boolean {
+  // Check file extensions for code files that might contain system prompts
+  const codeExtensions = ['.py', '.js', '.ts', '.tsx', '.jsx', '.java', '.go', '.rb'];
+  
+  // Get the file extension
+  const lastDotIndex = filePath.lastIndexOf('.');
+  if (lastDotIndex === -1) return false;
+  
+  const extension = filePath.slice(lastDotIndex);
+  return codeExtensions.includes(extension);
 }
