@@ -129,7 +129,23 @@ const Index = () => {
     try {
       addLog(`Saving analysis results to database for: ${repositoryUrl}`);
       
-      // For anonymous public access, we'll modify the policy to allow anonymous users to insert data
+      // First, delete old repository analyses (older than 7 days)
+      const oneWeekAgo = new Date();
+      oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+      
+      const { error: deleteError, count } = await supabase
+        .from('repository_analyses')
+        .delete({ count: 'exact' })
+        .lt('created_at', oneWeekAgo.toISOString());
+      
+      if (deleteError) {
+        console.error('Error deleting old analyses:', deleteError);
+        addLog(`Failed to clean up old analyses: ${deleteError.message}`);
+      } else if (count && count > 0) {
+        addLog(`Cleaned up ${count} old repository analyses`);
+      }
+      
+      // Now save the new analysis
       const { error } = await supabase
         .from('repository_analyses')
         .insert({
