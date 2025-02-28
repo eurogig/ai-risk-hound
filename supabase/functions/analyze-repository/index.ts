@@ -1,278 +1,422 @@
 
-// Import necessary modules
-import "https://deno.land/x/xhr@0.1.0/mod.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { createClient } from '@supabase/supabase-js';
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.7.1";
+import OpenAI from "https://esm.sh/openai@4.0.0";
 
-// CORS headers
+const supabaseUrl = Deno.env.get("SUPABASE_URL") || "";
+const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+const openaiApiKey = Deno.env.get("OPENAI_API_KEY") || "";
+
 const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
+// LLM risk patterns to detect
+const riskPatterns = {
+  promptInjection: ["prompt injection", "instruction injection", "jailbreak", "prompt escape"],
+  dataLeakage: ["data leakage", "training data", "information disclosure", "sensitive data", "confidential"],
+  hallucination: ["hallucination", "confabulation", "factual accuracy", "incorrect information"],
+  apiKeyExposure: ["api key", "apikey", "secret key", "credentials", "token"],
+  modelPoisoning: ["model poisoning", "adversarial example", "model manipulation", "training attack"],
+  systemPromptLeakage: ["system prompt", "hardcoded prompt", "leaked prompt", "prompt disclosure"],
+};
+
+// OWASP LLM category mapping
+const owaspCategories = {
+  "prompt injection": {
+    id: "LLM01:2025",
+    name: "Prompt Injection",
+    description: "A vulnerability where user inputs manipulate the LLM's behavior by altering its prompts."
+  },
+  "data leakage": {
+    id: "LLM02:2025", 
+    name: "Sensitive Information Disclosure",
+    description: "Risks involving the exposure of confidential data within the LLM or its applications."
+  },
+  "hallucination": {
+    id: "LLM09:2025",
+    name: "Misinformation",
+    description: "The potential for LLMs to generate and propagate false or misleading information."
+  },
+  "api key exposure": {
+    id: "LLM03:2025",
+    name: "Supply Chain",
+    description: "Vulnerabilities arising from the components and dependencies used in LLM development and deployment."
+  },
+  "model poisoning": {
+    id: "LLM04:2025",
+    name: "Data and Model Poisoning",
+    description: "Threats where malicious data is introduced during training, fine-tuning, or embedding processes."
+  },
+  "system prompt leakage": {
+    id: "LLM07:2025",
+    name: "System Prompt Leakage",
+    description: "The exposure of system-level prompts that can reveal internal configurations or logic."
+  }
+};
+
+// Helper function to enhance security risk with OWASP categories
+function enhanceSecurityRisks(risks) {
+  if (!Array.isArray(risks)) return [];
+  
+  return risks.map(risk => {
+    if (!risk) return null;
+    
+    // Normalize risk name
+    const riskName = risk.risk || risk.risk_name || "";
+    const riskLower = riskName.toLowerCase();
+    
+    // Add OWASP category
+    if (!risk.owasp_category) {
+      for (const [riskType, category] of Object.entries(owaspCategories)) {
+        if (riskLower.includes(riskType)) {
+          risk.owasp_category = category;
+          break;
+        }
+      }
+      
+      // Default if no match found
+      if (!risk.owasp_category) {
+        risk.owasp_category = {
+          id: "LLM05:2025",
+          name: "Improper Output Handling",
+          description: "Issues stemming from inadequate validation, sanitization, or escaping of LLM outputs."
+        };
+      }
+    }
+    
+    // Ensure all needed fields exist
+    if (!risk.risk && risk.risk_name) risk.risk = risk.risk_name;
+    if (!risk.risk_name && risk.risk) risk.risk_name = risk.risk;
+    if (!risk.related_code_references) risk.related_code_references = [];
+    
+    return risk;
+  }).filter(risk => risk !== null);
+}
+
+// Ensure all core risk types exist
+function ensureCoreRisks(risks, codeReferences) {
+  if (!Array.isArray(risks)) risks = [];
+  
+  const riskMap = new Map();
+  
+  // Add existing risks to map
+  risks.forEach(risk => {
+    if (!risk) return;
+    const riskName = risk.risk || risk.risk_name || "";
+    riskMap.set(riskName.toLowerCase(), risk);
+  });
+  
+  // Core risk definitions
+  const coreRisks = [
+    {
+      name: "Prompt Injection",
+      severity: "High",
+      description: "User inputs could manipulate the LLM's behavior by altering its prompt instructions.",
+      riskType: "prompt injection"
+    },
+    {
+      name: "Data Leakage via LLM",
+      severity: "Medium",
+      description: "LLM responses might inadvertently expose sensitive data or training information.",
+      riskType: "data leakage"
+    },
+    {
+      name: "Hallucination",
+      severity: "Medium",
+      description: "The LLM may generate incorrect or fabricated information presented as factual.",
+      riskType: "hallucination"
+    },
+    {
+      name: "API Key Exposure",
+      severity: "High",
+      description: "API keys or credentials may be exposed in the codebase.",
+      riskType: "api key exposure"
+    },
+    {
+      name: "Model Poisoning",
+      severity: "Medium",
+      description: "The LLM could be influenced by adversarial inputs or poisoned training data.",
+      riskType: "model poisoning"
+    },
+    {
+      name: "Hardcoded System Prompts",
+      severity: "Medium",
+      description: "Hardcoded system prompts in the codebase can reveal sensitive information or create vulnerabilities.",
+      riskType: "system prompt leakage"
+    }
+  ];
+  
+  // Add missing risks
+  coreRisks.forEach(coreRisk => {
+    // Check if this risk type already exists
+    let exists = false;
+    for (const [key, risk] of riskMap.entries()) {
+      if (key.includes(coreRisk.riskType)) {
+        exists = true;
+        break;
+      }
+    }
+    
+    // If not exists, create it
+    if (!exists) {
+      const newRisk = {
+        risk: coreRisk.name,
+        risk_name: coreRisk.name,
+        severity: coreRisk.severity,
+        description: coreRisk.description,
+        related_code_references: [],
+        owasp_category: owaspCategories[coreRisk.riskType]
+      };
+      
+      risks.push(newRisk);
+      riskMap.set(coreRisk.name.toLowerCase(), newRisk);
+    }
+  });
+  
+  // Associate code references with risks based on content
+  if (Array.isArray(codeReferences)) {
+    codeReferences.forEach(ref => {
+      if (!ref || !ref.snippet) return;
+      
+      const snippet = ref.snippet.toLowerCase();
+      const fileName = (ref.file || "").toLowerCase();
+      
+      // Check for risk patterns in the code
+      for (const [riskType, patterns] of Object.entries(riskPatterns)) {
+        if (patterns.some(pattern => snippet.includes(pattern) || fileName.includes(pattern))) {
+          // Find matching risk
+          for (const risk of risks) {
+            const riskName = (risk.risk || risk.risk_name || "").toLowerCase();
+            
+            if (riskType === "promptInjection" && patterns.some(p => riskName.includes(p))) {
+              if (!risk.related_code_references.includes(ref.id)) {
+                risk.related_code_references.push(ref.id);
+              }
+            } else if (riskType === "dataLeakage" && riskName.includes("data leakage")) {
+              if (!risk.related_code_references.includes(ref.id)) {
+                risk.related_code_references.push(ref.id);
+              }
+            } else if (riskType === "hallucination" && riskName.includes("hallucination")) {
+              if (!risk.related_code_references.includes(ref.id)) {
+                risk.related_code_references.push(ref.id);
+              }
+            } else if (riskType === "apiKeyExposure" && riskName.includes("api key")) {
+              if (!risk.related_code_references.includes(ref.id)) {
+                risk.related_code_references.push(ref.id);
+              }
+            } else if (riskType === "modelPoisoning" && riskName.includes("model poisoning")) {
+              if (!risk.related_code_references.includes(ref.id)) {
+                risk.related_code_references.push(ref.id);
+              }
+            } else if (riskType === "systemPromptLeakage" && (riskName.includes("system prompt") || riskName.includes("hardcoded"))) {
+              if (!risk.related_code_references.includes(ref.id)) {
+                risk.related_code_references.push(ref.id);
+              }
+            }
+          }
+        }
+      }
+    });
+  }
+  
+  // Remove risks with no related code references if they were generated
+  return risks.filter(risk => 
+    risk && ((risk.related_code_references && risk.related_code_references.length > 0) || 
+    risk.source === "ai_detection")
+  );
+}
+
+// Process the analysis to ensure proper formatting and relationships
+function processAnalysisResult(result) {
+  if (!result) return null;
+  
+  try {
+    console.log("Processing analysis result...");
+    
+    // Ensure code references have IDs
+    if (Array.isArray(result.code_references)) {
+      result.code_references = result.code_references.map((ref, index) => {
+        if (!ref) return null;
+        if (!ref.id) ref.id = `ref-${index}`;
+        if (!ref.verified) ref.verified = true;
+        return ref;
+      }).filter(ref => ref !== null);
+    } else {
+      result.code_references = [];
+    }
+    
+    // Ensure security risks are properly formed
+    if (Array.isArray(result.security_risks)) {
+      result.security_risks = enhanceSecurityRisks(result.security_risks);
+    } else {
+      result.security_risks = [];
+    }
+    
+    // Ensure all six core risks are represented and code is properly associated
+    result.security_risks = ensureCoreRisks(result.security_risks, result.code_references);
+    
+    // Ensure AI components exist
+    if (!Array.isArray(result.ai_components_detected)) {
+      result.ai_components_detected = [];
+    }
+    
+    // Ensure remediation suggestions exist
+    if (!Array.isArray(result.remediation_suggestions)) {
+      result.remediation_suggestions = [];
+    }
+    
+    // Add standard remediation suggestions if none exist
+    if (result.remediation_suggestions.length === 0) {
+      result.remediation_suggestions = [
+        "Implement input validation for all user inputs that could influence LLM prompts",
+        "Add content filtering on LLM outputs to prevent sensitive data exposure",
+        "Use rate limiting to prevent excessive API usage and cost overruns",
+        "Store API keys securely in environment variables, not in code",
+        "Implement a fact-checking mechanism for critical LLM outputs",
+        "Add guardrails to prevent prompt injection attacks"
+      ];
+    }
+    
+    console.log("Analysis processing complete.");
+    return result;
+  } catch (error) {
+    console.error("Error processing analysis result:", error);
+    return result;
+  }
+}
+
 serve(async (req) => {
-  // Handle CORS preflight requests
-  if (req.method === 'OPTIONS') {
-    return new Response(null, { headers: corsHeaders });
+  // Handle CORS preflight request
+  if (req.method === "OPTIONS") {
+    return new Response(null, {
+      status: 204,
+      headers: corsHeaders,
+    });
   }
 
   try {
-    // Parse the request
-    const { repositoryUrl, apiKey, options, debugMode } = await req.json();
-    
+    const { repositoryUrl } = await req.json();
+    console.log(`Analyzing repository: ${repositoryUrl}`);
+
     if (!repositoryUrl) {
-      return new Response(
-        JSON.stringify({ error: 'Repository URL is required' }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      throw new Error("Repository URL is required");
     }
 
-    if (!apiKey) {
-      return new Response(
-        JSON.stringify({ error: 'API key is required' }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-
-    // Set up debug information if debug mode is enabled
-    const debugInfo = debugMode ? { steps: [], timing: {} } : null;
-    if (debugInfo) {
-      debugInfo.timing.start = new Date().toISOString();
-      debugInfo.steps.push(`Analysis started for repository: ${repositoryUrl}`);
-    }
-
-    // Make the API request to OpenAI
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: options?.model || 'gpt-4o-mini',
-        messages: [
-          {
-            role: 'system',
-            content: options?.systemPrompt || `You are a GitHub repository security scanner that specializes in AI and LLM applications.`
-          },
-          {
-            role: 'user',
-            content: `Analyze this GitHub repository: ${repositoryUrl}`
-          }
-        ],
-        temperature: options?.temperature || 0.1,
-      }),
+    // Initialize the OpenAI client
+    const openai = new OpenAI({
+      apiKey: openaiApiKey,
     });
 
-    if (debugInfo) {
-      debugInfo.steps.push('Received response from OpenAI API');
-      debugInfo.timing.openAiResponse = new Date().toISOString();
-    }
-
-    // Check if the response was successful
-    if (!response.ok) {
-      const errorData = await response.json();
-      if (debugInfo) {
-        debugInfo.steps.push(`OpenAI API error: ${JSON.stringify(errorData)}`);
-      }
-      
-      console.error('OpenAI API error:', errorData);
-      
-      return new Response(
-        JSON.stringify({ error: 'Failed to analyze repository', details: errorData }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-
-    // Parse the response
-    const data = await response.json();
+    // Basic prompt for repository analysis
+    const prompt = `
+    You are an AI cybersecurity expert analyzing a GitHub repository for AI security risks.
     
-    if (debugInfo) {
-      debugInfo.steps.push('Parsed OpenAI response');
-    }
-
-    // Extract content from the response
-    const analysisText = data.choices[0].message.content;
+    Repository URL: ${repositoryUrl}
     
-    if (debugInfo) {
-      debugInfo.steps.push('Extracted analysis content');
-      debugInfo.rawAnalysis = analysisText.substring(0, 500) + '...'; // First 500 chars for debug
+    Your task is to:
+    1. Analyze the provided GitHub repository for potential security risks associated with AI/ML implementations
+    2. Focus on security concerns specific to AI models, such as LLM implementations, RAG systems, or other ML models
+    3. Identify potential vulnerabilities related to user input handling, API key storage, and data leakage
+    4. Look for hardcoded system prompts that might reveal implementation details
+    5. For each identified risk, provide the specific code references where the issue occurs
+    
+    Please format your response as a JSON object with the following structure:
+    
+    {
+      "confidence_score": float, // 0-1 indicating how confident you are that this repo contains AI code
+      "security_risks": [
+        {
+          "risk": string, // The name of the security risk
+          "severity": string, // "Low", "Medium", or "High"
+          "description": string, // Detailed description of the risk
+          "related_code_references": [string], // Array of code reference IDs (ref-0, ref-1, etc.)
+          "source": string // "ai_detection" for risks found by AI analysis
+        }
+      ],
+      "code_references": [
+        {
+          "id": string, // Unique identifier (ref-0, ref-1, etc.)
+          "file": string, // File path
+          "line": number, // Line number
+          "snippet": string, // Code snippet
+          "verified": boolean // Whether this code exists in the repo (set to true)
+        }
+      ],
+      "ai_components_detected": [
+        {
+          "name": string, // Name of the AI component
+          "type": string, // Type of component (e.g., "LLM Provider", "Vector Database")
+          "description": string // Description of the component's usage
+        }
+      ],
+      "remediation_suggestions": [string] // Array of suggestions to address the security risks
     }
+    
+    Be thorough and detailed. Look for OWASP LLM Top 10 vulnerabilities like prompt injection, data leakage, hallucination, improper output handling, and excessive agency.
+    `;
 
-    // Try to parse the JSON from the response
+    console.log("Sending analysis request to OpenAI...");
+    
+    // Make the request to OpenAI
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o",
+      messages: [{ role: "system", content: prompt }],
+      temperature: 0.5,
+      max_tokens: 4000,
+    });
+
+    const responseText = completion.choices[0].message.content;
+    console.log("Received response from OpenAI");
+
     let analysisResult;
     try {
-      // Look for JSON in the response
-      const jsonMatch = analysisText.match(/```json\n([\s\S]*?)\n```/) || 
-                        analysisText.match(/{[\s\S]*}/);
-      
-      const jsonContent = jsonMatch ? jsonMatch[1] || jsonMatch[0] : analysisText;
-      
-      // Clean the JSON string and parse it
-      const cleanedJson = jsonContent.replace(/```json|```/g, '').trim();
-      analysisResult = JSON.parse(cleanedJson);
-      
-      if (debugInfo) {
-        debugInfo.steps.push('Successfully parsed JSON from response');
-      }
-    } catch (error) {
-      if (debugInfo) {
-        debugInfo.steps.push(`Failed to parse JSON: ${error.message}`);
-        debugInfo.jsonParsingError = error.message;
-        debugInfo.rawText = analysisText.substring(0, 1000) + '...'; // First 1000 chars for debug
-      }
-      
-      console.error('Failed to parse JSON from OpenAI response:', error);
-      console.log('Raw response:', analysisText);
-      
-      // Fallback: If the response isn't valid JSON, attempt to extract structured data
-      analysisResult = {
-        ai_components_detected: [],
-        security_risks: [],
-        code_references: [],
-        confidence_score: 0.5,
-        remediation_suggestions: []
-      };
-
-      // Search for hardcoded system prompts in the raw text
-      if (analysisText.includes("system prompt") || analysisText.includes("hardcoded prompt")) {
-        analysisResult.security_risks.push({
-          risk: "Potential Hardcoded System Prompts",
-          severity: "Medium",
-          description: "Possible hardcoded system prompts detected but couldn't parse details.",
-          related_code_references: []
-        });
-      }
+      // Parse the JSON response
+      analysisResult = JSON.parse(responseText);
+      console.log("Successfully parsed JSON response");
+    } catch (parseError) {
+      console.error("Failed to parse JSON response:", parseError);
+      throw new Error("Failed to parse analysis result");
     }
 
-    // Ensure the analysis result has the expected structure
-    const defaultResult = {
-      ai_components_detected: [],
-      security_risks: [],
-      code_references: [],
-      confidence_score: 0.5,
-      remediation_suggestions: []
-    };
+    // Process and enhance the analysis result
+    const processedResult = processAnalysisResult(analysisResult);
+    
+    // Create Supabase client
+    const supabase = createClient(supabaseUrl, supabaseKey);
+    
+    // Store the analysis result in the database
+    const { data, error } = await supabase
+      .from("repository_analyses")
+      .insert({
+        repository_url: repositoryUrl,
+        analysis_result: processedResult,
+      })
+      .select();
 
-    // Merge the parsed result with the default structure to ensure all fields exist
-    const mergedResult = {
-      ...defaultResult,
-      ...analysisResult,
-      ai_components_detected: analysisResult.ai_components_detected || [],
-      security_risks: analysisResult.security_risks || [],
-      code_references: analysisResult.code_references || [],
-      remediation_suggestions: analysisResult.remediation_suggestions || []
-    };
+    if (error) {
+      console.error("Failed to store analysis result:", error);
+      throw new Error("Failed to store analysis result");
+    }
 
-    // Process and detect hardcoded system prompts
-    // but ENSURE we don't duplicate them if they already exist
-    const hasSystemPromptRisk = mergedResult.security_risks.some(risk => {
-      const riskName = risk.risk || risk.risk_name || '';
-      return riskName.toLowerCase().includes('system prompt') || 
-             riskName.toLowerCase().includes('hardcoded prompt');
+    console.log("Analysis complete and stored in database");
+    
+    return new Response(JSON.stringify(processedResult), {
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+      status: 200,
     });
-
-    // Detect hardcoded system prompts in code references
-    const promptReferences = [];
-    if (mergedResult.code_references && mergedResult.code_references.length > 0) {
-      mergedResult.code_references.forEach(ref => {
-        if (!ref || !ref.snippet) return;
-        
-        const snippet = ref.snippet.toLowerCase();
-        // Check for patterns indicating system prompts
-        const isSystemPrompt = (
-          (snippet.includes('system') && snippet.includes('prompt')) ||
-          (snippet.includes('role') && snippet.includes('system') && snippet.includes('content')) ||
-          (snippet.includes('you are') && (snippet.includes('assistant') || snippet.includes('ai')))
-        );
-
-        if (isSystemPrompt) {
-          // Create a unique ID if not present
-          const id = ref.id || `${ref.file}-${ref.line}-${promptReferences.length}`;
-          promptReferences.push({
-            ...ref,
-            id: id
-          });
-        }
-      });
-
-      // Log how many potential system prompts were found
-      console.log(`Detected ${promptReferences.length} potential hardcoded system prompts`);
-    }
-
-    // Add system prompt risk only if it doesn't already exist and we found references
-    if (!hasSystemPromptRisk && promptReferences.length > 0) {
-      const systemPromptRisk = {
-        risk: "Hardcoded System Prompts",
-        severity: "Medium",
-        description: "Hardcoded system prompts were detected in the codebase. These may leak sensitive information about the application logic or create security vulnerabilities through prompt injection attacks.",
-        related_code_references: promptReferences.map(ref => ref.id),
-        owasp_category: {
-          id: "LLM07:2025",
-          name: "System Prompt Leakage",
-          description: "The exposure of system-level prompts that can reveal internal configurations or logic."
-        }
-      };
-      
-      mergedResult.security_risks.push(systemPromptRisk);
-      
-      // Add prompt references to code references if they don't already exist
-      const existingIds = new Set(mergedResult.code_references.map(ref => ref.id));
-      promptReferences.forEach(ref => {
-        if (!existingIds.has(ref.id)) {
-          mergedResult.code_references.push(ref);
-        }
-      });
-    }
-
-    // Standardize field names across all risks
-    if (mergedResult.security_risks) {
-      mergedResult.security_risks = mergedResult.security_risks.map(risk => {
-        // Ensure risk name is consistent
-        if (!risk.risk && risk.risk_name) {
-          risk.risk = risk.risk_name;
-        } else if (!risk.risk) {
-          risk.risk = "Unknown Risk";
-        }
-        
-        // Ensure other fields have default values
-        if (!risk.severity) risk.severity = "Medium";
-        if (!risk.description) risk.description = "No description provided.";
-        if (!risk.related_code_references) risk.related_code_references = [];
-        
-        return risk;
-      });
-    }
-
-    // Complete the debug information
-    if (debugInfo) {
-      debugInfo.steps.push('Analysis complete');
-      debugInfo.timing.end = new Date().toISOString();
-      
-      // Add statistics for debugging
-      debugInfo.stats = {
-        aiComponentsCount: mergedResult.ai_components_detected.length,
-        securityRisksCount: mergedResult.security_risks.length,
-        codeReferencesCount: mergedResult.code_references.length,
-        remediationSuggestionsCount: mergedResult.remediation_suggestions.length,
-        confidenceScore: mergedResult.confidence_score
-      };
-
-      // Include debug information in the response if debug mode is enabled
-      mergedResult.debug = debugInfo;
-    }
-
-    // Return the final analysis result
-    return new Response(
-      JSON.stringify(mergedResult),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
   } catch (error) {
-    console.error('Error in analyze-repository function:', error);
+    console.error("Error processing request:", error);
     
     return new Response(
-      JSON.stringify({ error: error.message || 'An error occurred during analysis' }),
-      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      JSON.stringify({
+        error: error.message || "An unknown error occurred",
+      }),
+      {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        status: 500,
+      }
     );
   }
 });
