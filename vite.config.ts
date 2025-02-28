@@ -12,7 +12,7 @@ export default defineConfig(({ mode }) => ({
   // Base path for GitHub Pages - it should match your repository name
   // Set it to '/' if you're deploying to a custom domain or using username.github.io
   // Otherwise use '/repository-name/'
-  base: '/riskrepo/',
+  base: '/ai-risk-hound/',
   plugins: [
     react(),
     mode === 'development' &&
