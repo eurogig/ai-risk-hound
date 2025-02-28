@@ -134,7 +134,7 @@ const Index = () => {
         <div className="w-full max-w-2xl mx-auto space-y-8">
           <div className="text-center space-y-4">
             <h1 className="text-3xl font-bold tracking-tight text-gray-900 sm:text-4xl">
-              AI Risk Detector
+              RiskRover
             </h1>
             <p className="text-lg text-gray-600">
               Scan your GitHub repository for AI components and security risks

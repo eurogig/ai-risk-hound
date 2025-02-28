@@ -1,7 +1,7 @@
 
 import { Link, useLocation } from "react-router-dom";
 import { Button } from "@/components/ui/button";
-import { Github, BarChart2 } from "lucide-react";
+import { Compass, BarChart2 } from "lucide-react";
 
 const Navigation = () => {
   const location = useLocation();
@@ -10,8 +10,8 @@ const Navigation = () => {
     <nav className="bg-white shadow-sm py-4">
       <div className="max-w-6xl mx-auto px-4 flex justify-between items-center">
         <div className="flex items-center space-x-2">
-          <Github className="h-6 w-6" />
-          <span className="font-bold text-xl">AI Risk Detector</span>
+          <Compass className="h-6 w-6 text-purple-600" />
+          <span className="font-bold text-xl">RiskRover</span>
         </div>
         
         <div className="flex space-x-2">

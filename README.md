@@ -1,9 +1,9 @@
 
-# AI Risk Detector for Git Repositories
+# RiskRover - AI Risk Detector for Git Repositories
 
 ## Project Overview
 
-AI Risk Detector is a tool designed to scan Git repositories for AI components and assess potential security risks. The tool analyzes repository files, identifies AI libraries, frameworks, and code patterns, and provides actionable insights into security vulnerabilities.
+RiskRover is a tool designed to scan Git repositories for AI components and assess potential security risks. The tool analyzes repository files, identifies AI libraries, frameworks, and code patterns, and provides actionable insights into security vulnerabilities.
 
 ## Features
 
