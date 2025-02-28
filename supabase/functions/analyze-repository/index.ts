@@ -1,5 +1,6 @@
 
-import { createClient } from '@supabase/supabase-js';
+// Import from npm: URL instead of using a relative import
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.21.0';
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 
 const corsHeaders = {
@@ -40,16 +41,17 @@ serve(async (req) => {
 
   try {
     // Parse request body
-    const { repository_url } = await req.json();
+    const reqData = await req.json();
+    const repositoryUrl = reqData.repositoryUrl;
     
-    if (!repository_url) {
+    if (!repositoryUrl) {
       return new Response(
         JSON.stringify({ error: "Repository URL is required" }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 400 }
       );
     }
 
-    console.log(`Analyzing repository: ${repository_url}`);
+    console.log(`Analyzing repository: ${repositoryUrl}`);
     
     // In a real implementation, you'd fetch and analyze the repository code here
     // For this example, we'll return mock data with explicit relationships

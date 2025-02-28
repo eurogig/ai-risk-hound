@@ -18,12 +18,15 @@ interface RepositoryReport {
     risk: string;
     severity: string;
     description: string;
+    related_code_references: string[]; // IDs of related code references
   }[];
   code_references: {
+    id: string; // Unique ID for each reference
     file: string;
     line: number;
     snippet: string;
-    verified?: boolean;
+    verified: boolean;
+    relatedRisks?: string[]; // Risk names this reference is related to
   }[];
   confidence_score: number;
   remediation_suggestions: string[];
