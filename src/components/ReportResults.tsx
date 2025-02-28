@@ -146,31 +146,7 @@ const ReportResults = ({ report }: ReportResultsProps) => {
         </CardContent>
       </Card>
 
-      {/* AI Components Section */}
-      {report.ai_components_detected.length > 0 && (
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-xl">AI Components Detected</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-3">
-              {report.ai_components_detected.map((component, index) => (
-                <div key={index} className="flex justify-between items-center p-3 rounded-md bg-gray-50">
-                  <div>
-                    <div className="font-medium">{component.name}</div>
-                    <div className="text-sm text-gray-500">{component.type}</div>
-                  </div>
-                  <Badge variant="outline" className="ml-auto">
-                    {Math.round(component.confidence * 100)}% confidence
-                  </Badge>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Security Risks Section with Connected Code References and AI Components */}
+      {/* Security Risks Section - Now placed IMMEDIATELY after confidence score */}
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-xl">Security Risks</CardTitle>
@@ -213,10 +189,10 @@ const ReportResults = ({ report }: ReportResultsProps) => {
                           </div>
                         )}
                         
-                        {/* Code Evidence for this risk - only shown if there are relevant references */}
-                        {relatedReferences.length > 0 && (
-                          <div className="mt-4">
-                            <h4 className="text-sm font-medium text-gray-700 mb-2">Evidence in Code:</h4>
+                        {/* Code Evidence for this risk - always display the section header */}
+                        <div className="mt-4">
+                          <h4 className="text-sm font-medium text-gray-700 mb-2">Evidence in Code:</h4>
+                          {relatedReferences.length > 0 ? (
                             <Accordion type="single" collapsible className="w-full">
                               {relatedReferences.map((reference, refIndex) => (
                                 <AccordionItem key={refIndex} value={`risk-${index}-ref-${refIndex}`} className="border border-gray-100 rounded-md mb-2">
@@ -234,8 +210,10 @@ const ReportResults = ({ report }: ReportResultsProps) => {
                                 </AccordionItem>
                               ))}
                             </Accordion>
-                          </div>
-                        )}
+                          ) : (
+                            <p className="text-sm text-gray-500 italic">No specific code references found for this risk.</p>
+                          )}
+                        </div>
                       </div>
                     </AccordionContent>
                   </AccordionItem>
@@ -250,13 +228,40 @@ const ReportResults = ({ report }: ReportResultsProps) => {
         </CardContent>
       </Card>
 
+      {/* AI Components Section - Moved below security risks */}
+      {report.ai_components_detected.length > 0 && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-xl">AI Components Detected</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-3">
+              {report.ai_components_detected.map((component, index) => (
+                <div key={index} className="flex justify-between items-center p-3 rounded-md bg-gray-50">
+                  <div>
+                    <div className="font-medium">{component.name}</div>
+                    <div className="text-sm text-gray-500">{component.type}</div>
+                  </div>
+                  <Badge variant="outline" className="ml-auto">
+                    {Math.round(component.confidence * 100)}% confidence
+                  </Badge>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Additional Code References Section (showing references not connected to security risks) */}
       {getUnrelatedCodeReferences().length > 0 && (
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-xl">AI References in Code</CardTitle>
+            <CardTitle className="text-xl">Additional AI References in Code</CardTitle>
           </CardHeader>
           <CardContent>
+            <p className="text-sm text-gray-500 mb-3">
+              These code references show AI implementations not directly associated with any detected security risks.
+            </p>
             <Accordion type="single" collapsible className="w-full">
               {getUnrelatedCodeReferences().map((reference, index) => (
                 <AccordionItem key={index} value={`item-${index}`}>
