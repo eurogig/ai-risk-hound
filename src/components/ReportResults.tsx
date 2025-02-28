@@ -59,6 +59,25 @@ const ReportResults = ({ report }: ReportResultsProps) => {
   // Filter out unverified code references
   const verifiedCodeReferences = report.code_references.filter(ref => ref.verified === true);
 
+  // Helper function to find code references related to a specific risk
+  const findRelatedCodeReferences = (risk: string) => {
+    const keywords = risk.toLowerCase().split(' ');
+    
+    return verifiedCodeReferences.filter(ref => {
+      // Check if explicitly related via the relatedTo property
+      if (ref.relatedTo && ref.relatedTo.toLowerCase() === risk.toLowerCase()) {
+        return true;
+      }
+      
+      // Check if the snippet contains key terms from the risk
+      const snippetLower = ref.snippet.toLowerCase();
+      return keywords.some(keyword => 
+        // Only consider meaningful keywords (longer than 3 chars)
+        keyword.length > 3 && snippetLower.includes(keyword)
+      );
+    });
+  };
+
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
       <Alert className="bg-yellow-50 border-yellow-200">
@@ -127,11 +146,31 @@ const ReportResults = ({ report }: ReportResultsProps) => {
         <CardContent>
           <div className="space-y-6">
             {report.security_risks.map((risk, index) => {
-              // Find code references related to this risk
-              const relatedReferences = verifiedCodeReferences.filter(
-                ref => ref.relatedTo === risk.risk || 
-                       ref.snippet.toLowerCase().includes(risk.risk.toLowerCase())
+              // Get code references related to this specific risk
+              const relatedReferences = findRelatedCodeReferences(risk.risk);
+              
+              // Only display risks with verified code evidence
+              // For "Potential for Data Leakage via LLM", require both RAG and LLM evidence
+              const isDataLeakageRisk = risk.risk.includes("Data Leakage") || risk.risk.includes("data leakage");
+              const hasRAGEvidence = verifiedCodeReferences.some(ref => 
+                ref.snippet.toLowerCase().includes("faiss") || 
+                ref.snippet.toLowerCase().includes("pinecone") ||
+                ref.snippet.toLowerCase().includes("weaviate") ||
+                ref.snippet.toLowerCase().includes("chromadb") ||
+                ref.snippet.toLowerCase().includes("qdrant") ||
+                ref.snippet.toLowerCase().includes("embeddings") ||
+                ref.snippet.toLowerCase().includes("vector")
               );
+              
+              // Skip data leakage risks without RAG evidence
+              if (isDataLeakageRisk && !hasRAGEvidence) {
+                return null;
+              }
+              
+              // Skip risks with no related code references
+              if (relatedReferences.length === 0) {
+                return null;
+              }
               
               return (
                 <div key={index} className="space-y-3">
@@ -146,45 +185,48 @@ const ReportResults = ({ report }: ReportResultsProps) => {
                   </div>
                   
                   {/* Code Evidence for this risk */}
-                  {relatedReferences.length > 0 && (
-                    <div className="ml-4 border-l-2 border-gray-200 pl-4">
-                      <p className="text-sm text-gray-500 mb-2">Evidence found in code:</p>
-                      <Accordion type="single" collapsible className="w-full">
-                        {relatedReferences.map((reference, refIndex) => (
-                          <AccordionItem key={refIndex} value={`risk-${index}-ref-${refIndex}`}>
-                            <AccordionTrigger className="hover:no-underline text-sm">
-                              <div className="flex items-center text-left">
-                                <span className="font-medium">{reference.file}</span>
-                                <span className="ml-2 text-sm text-gray-500">Line {reference.line}</span>
-                              </div>
-                            </AccordionTrigger>
-                            <AccordionContent>
-                              <div className="p-3 rounded-md font-mono text-sm overflow-x-auto bg-gray-100">
-                                {reference.snippet}
-                              </div>
-                            </AccordionContent>
-                          </AccordionItem>
-                        ))}
-                      </Accordion>
-                    </div>
-                  )}
+                  <div className="ml-4 border-l-2 border-gray-200 pl-4">
+                    <p className="text-sm text-gray-500 mb-2">Evidence found in code:</p>
+                    <Accordion type="single" collapsible className="w-full">
+                      {relatedReferences.map((reference, refIndex) => (
+                        <AccordionItem key={refIndex} value={`risk-${index}-ref-${refIndex}`}>
+                          <AccordionTrigger className="hover:no-underline text-sm">
+                            <div className="flex items-center text-left">
+                              <span className="font-medium">{reference.file}</span>
+                              <span className="ml-2 text-sm text-gray-500">Line {reference.line}</span>
+                            </div>
+                          </AccordionTrigger>
+                          <AccordionContent>
+                            <div className="p-3 rounded-md font-mono text-sm overflow-x-auto bg-gray-100">
+                              {reference.snippet}
+                            </div>
+                          </AccordionContent>
+                        </AccordionItem>
+                      ))}
+                    </Accordion>
+                  </div>
                 </div>
               );
-            })}
+            }).filter(Boolean)}
           </div>
         </CardContent>
       </Card>
 
-      {/* Code References Section (Only if there are references not related to security risks) */}
+      {/* Additional Code References Section (showing references not connected to security risks) */}
       {verifiedCodeReferences.length > 0 && (
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-xl">Additional Code References</CardTitle>
+            <CardTitle className="text-xl">Additional AI References in Code</CardTitle>
           </CardHeader>
           <CardContent>
             <Accordion type="single" collapsible className="w-full">
               {verifiedCodeReferences
-                .filter(ref => !ref.relatedTo) // Only show references not already shown with security risks
+                .filter(ref => 
+                  // Only show references that haven't been displayed with security risks
+                  !report.security_risks.some(risk => 
+                    findRelatedCodeReferences(risk.risk).includes(ref)
+                  )
+                )
                 .map((reference, index) => (
                   <AccordionItem key={index} value={`item-${index}`}>
                     <AccordionTrigger className="hover:no-underline">
