@@ -28,74 +28,6 @@ interface RepositoryReport {
   remediation_suggestions: string[];
 }
 
-// Mock data for simulation mode
-const generateMockReport = (repositoryUrl: string): RepositoryReport => {
-  // Extract repo name for personalization
-  const repoName = repositoryUrl.split('/').pop() || "repository";
-  
-  return {
-    ai_components_detected: [
-      {
-        name: "OpenAI API",
-        type: "LLM API",
-        confidence: 0.95
-      },
-      {
-        name: "Langchain",
-        type: "AI Framework",
-        confidence: 0.85
-      },
-      {
-        name: "Hugging Face Transformers",
-        type: "ML Library",
-        confidence: 0.78
-      }
-    ],
-    security_risks: [
-      {
-        risk: "API Key Exposure",
-        severity: "Critical",
-        description: `API key found hardcoded in ${repoName} source files`
-      },
-      {
-        risk: "Potential for Prompt Injection",
-        severity: "High",
-        description: "User input is passed directly to AI model without sanitization"
-      },
-      {
-        risk: "Data Privacy Concerns",
-        severity: "Medium",
-        description: "Sensitive user data might be sent to external AI services"
-      }
-    ],
-    code_references: [
-      {
-        file: `${repoName}/src/utils/api.js`,
-        line: 15,
-        snippet: "const OPENAI_API_KEY = 'sk-...';"
-      },
-      {
-        file: `${repoName}/src/components/ChatBox.jsx`,
-        line: 42,
-        snippet: "const response = await openai.chat.completions.create({ messages: [userInput] });"
-      },
-      {
-        file: `${repoName}/server/routes/ai.js`,
-        line: 27,
-        snippet: "const embedding = await model.embed(userQuery);"
-      }
-    ],
-    confidence_score: 0.87,
-    remediation_suggestions: [
-      "Use environment variables for API keys instead of hardcoding them",
-      "Implement input validation before passing to LLM",
-      "Set up content filtering for LLM inputs and outputs",
-      "Use parameterized prompts instead of direct string concatenation",
-      "Implement rate limiting for API requests"
-    ]
-  };
-};
-
 const Index = () => {
   const [repositoryUrl, setRepositoryUrl] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -122,26 +54,53 @@ const Index = () => {
     setError(null);
     
     try {
-      // Simulate a network request with a short delay
-      await new Promise(resolve => setTimeout(resolve, 1500));
+      // Use the Supabase URL and key from environment variables
+      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+      const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
       
-      // Generate mock report data
-      const mockReport = generateMockReport(repositoryUrl);
-      setReport(mockReport);
+      if (!supabaseUrl || !supabaseKey) {
+        throw new Error("Supabase configuration is missing. Please check your environment variables.");
+      }
+      
+      // Try the simplified function first as it's more lightweight
+      const endpoint = `${supabaseUrl}/functions/v1/analyze-repository-simple`;
+      
+      console.log("Sending request to:", endpoint);
+      
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${supabaseKey}`
+        },
+        body: JSON.stringify({ repositoryUrl })
+      });
+      
+      if (!response.ok) {
+        let errorMessage;
+        try {
+          const errorData = await response.json();
+          errorMessage = errorData.error || `HTTP error: ${response.status}`;
+        } catch (e) {
+          errorMessage = `HTTP error: ${response.status}`;
+        }
+        throw new Error(errorMessage);
+      }
+      
+      const data = await response.json();
+      setReport(data);
       
       toast({
         title: "Analysis Complete",
         description: "Repository analysis has been completed successfully.",
       });
-      
-      console.log("Using simulation mode - Supabase functions are not yet deployed");
     } catch (err) {
-      console.error('Error generating report:', err);
-      setError("Failed to analyze repository. Please try again later.");
+      console.error('Error analyzing repository:', err);
+      setError(err.message || "Failed to analyze repository. Please check the URL and try again.");
       
       toast({
         title: "Analysis Failed",
-        description: "Failed to analyze repository. Please try again later.",
+        description: err.message || "Failed to analyze repository. Please try again.",
         variant: "destructive",
       });
     } finally {
@@ -196,11 +155,6 @@ const Index = () => {
               </Button>
             </form>
           </Card>
-          
-          <div className="p-4 bg-amber-50 border border-amber-200 rounded-md text-amber-800 text-sm">
-            <p className="font-medium">Note: Simulation Mode Active</p>
-            <p>The application is currently running in simulation mode. The analysis results are generated for demonstration purposes only.</p>
-          </div>
           
           {report && !isLoading && (
             <ReportResults report={report} />
