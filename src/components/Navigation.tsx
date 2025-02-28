@@ -1,7 +1,7 @@
 
 import { Link, useLocation } from "react-router-dom";
 import { Button } from "@/components/ui/button";
-import { Compass, BarChart2 } from "lucide-react";
+import { Dog, BarChart2 } from "lucide-react";
 
 const Navigation = () => {
   const location = useLocation();
@@ -10,7 +10,12 @@ const Navigation = () => {
     <nav className="bg-white shadow-sm py-4">
       <div className="max-w-6xl mx-auto px-4 flex justify-between items-center">
         <div className="flex items-center space-x-2">
-          <Compass className="h-6 w-6 text-purple-600" />
+          <div className="relative">
+            <Dog className="h-6 w-6 text-purple-600" />
+            {/* Cyber elements overlay */}
+            <div className="absolute top-1 left-1 w-1 h-1 bg-blue-400 rounded-full animate-pulse"></div>
+            <div className="absolute top-1 right-1 w-1 h-1 bg-blue-400 rounded-full animate-pulse" style={{animationDelay: '0.5s'}}></div>
+          </div>
           <span className="font-bold text-xl">RiskRover</span>
         </div>
         
