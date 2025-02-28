@@ -23,6 +23,7 @@ interface RepositoryReport {
     file: string;
     line: number;
     snippet: string;
+    verified?: boolean;
   }[];
   confidence_score: number;
   remediation_suggestions: string[];
@@ -68,13 +69,25 @@ const Index = () => {
         description: "This comprehensive analysis may take a bit longer. Please wait...",
       });
       
+      // Include specific system prompt instructions to reduce hallucinations
+      const payload = {
+        repositoryUrl,
+        options: {
+          systemPrompt: `Analyze the GitHub repository and provide insights about AI components and security risks. 
+          Only report code references that you can confirm exist in the repository. 
+          Do not invent or hallucinate file paths or code snippets. 
+          If uncertain about specific files, focus on identifying patterns and general concerns instead.
+          If you cannot find specific code references, leave that section empty rather than making suggestions.`
+        }
+      };
+      
       const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${supabaseKey}`
         },
-        body: JSON.stringify({ repositoryUrl })
+        body: JSON.stringify(payload)
       });
       
       if (!response.ok) {

@@ -3,6 +3,8 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { InfoIcon } from "lucide-react";
 import {
   Accordion,
   AccordionContent,
@@ -25,6 +27,7 @@ interface RepositoryReport {
     file: string;
     line: number;
     snippet: string;
+    verified?: boolean;
   }[];
   confidence_score: number;
   remediation_suggestions: string[];
@@ -52,8 +55,22 @@ const ReportResults = ({ report }: ReportResultsProps) => {
     }
   };
 
+  // For demo purposes, mark all code references as potentially AI-generated/unverified
+  // In a real implementation, this would come from the backend
+  const codeReferences = report.code_references.map(ref => ({
+    ...ref,
+    verified: ref.verified || false
+  }));
+
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
+      <Alert className="bg-yellow-50 border-yellow-200">
+        <InfoIcon className="h-4 w-4 text-yellow-600" />
+        <AlertDescription className="text-yellow-800">
+          This analysis is powered by AI and may include suggested patterns rather than verified findings. Always verify critical results.
+        </AlertDescription>
+      </Alert>
+      
       {/* Overall Score Card */}
       <Card>
         <CardHeader className="pb-2">
@@ -128,23 +145,33 @@ const ReportResults = ({ report }: ReportResultsProps) => {
       </Card>
 
       {/* Code References Section */}
-      {report.code_references.length > 0 && (
+      {codeReferences.length > 0 && (
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-xl">Code References</CardTitle>
+            <p className="text-sm text-gray-500">These code paths may be suggestions based on AI analysis rather than verified files.</p>
           </CardHeader>
           <CardContent>
             <Accordion type="single" collapsible className="w-full">
-              {report.code_references.map((reference, index) => (
+              {codeReferences.map((reference, index) => (
                 <AccordionItem key={index} value={`item-${index}`}>
                   <AccordionTrigger className="hover:no-underline">
                     <div className="flex items-center text-left">
-                      <span className="font-medium">{reference.file}</span>
+                      <span className={`font-medium ${!reference.verified ? 'text-gray-600' : ''}`}>
+                        {reference.file}
+                      </span>
                       <span className="ml-2 text-sm text-gray-500">Line {reference.line}</span>
+                      {!reference.verified && (
+                        <Badge variant="outline" className="ml-2 bg-amber-50 text-amber-800 border-amber-200">
+                          AI Suggestion
+                        </Badge>
+                      )}
                     </div>
                   </AccordionTrigger>
                   <AccordionContent>
-                    <div className="bg-gray-100 p-3 rounded-md font-mono text-sm overflow-x-auto">
+                    <div className={`p-3 rounded-md font-mono text-sm overflow-x-auto ${
+                      reference.verified ? 'bg-gray-100' : 'bg-amber-50 border border-amber-200'
+                    }`}>
                       {reference.snippet}
                     </div>
                   </AccordionContent>
