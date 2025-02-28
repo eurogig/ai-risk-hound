@@ -102,46 +102,69 @@ const ReportResults = ({ report }: ReportResultsProps) => {
       const fileName = ref.file.toLowerCase();
       const snippet = ref.snippet.toLowerCase();
       
+      // Common file extensions to watch for
+      const isCodeFile = 
+        fileName.endsWith('.py') || 
+        fileName.endsWith('.js') || 
+        fileName.endsWith('.ts') || 
+        fileName.endsWith('.tsx') || 
+        fileName.endsWith('.jsx') || 
+        fileName.endsWith('.java') || 
+        fileName.endsWith('.go');
+      
       // LLM-related patterns for prompt injection
+      const llmKeywords = [
+        'llm', 'chat', 'ai', 'bot', 'gpt', 'openai', 'prompt', 'claude', 'anthropic', 
+        'mistral', 'gemini', 'langchain', 'completion', 'model', 'assistant', 'language model',
+        'token', 'generate', 'huggingface', 'inference', 'agent', 'transformer', 'bert', 'dalle', 
+        'diffusion', 'stable diffusion', 'whisper', 'phi', 'llama', 'davinci', 'turbo', 'kagentic',
+        'autogen', 'agentic', 'rag', 'agent', 'multiagent', 'autonomous'
+      ];
+      
+      // Check if any LLM keyword is in the file name or snippet
       const isLlmRelated = 
-        fileName.includes('llm') || 
-        fileName.includes('chat') || 
-        fileName.includes('ai') || 
-        fileName.includes('bot') ||
-        fileName.includes('gpt') ||
-        fileName.includes('openai') ||
-        fileName.includes('prompt') ||
-        snippet.includes('openai') ||
-        snippet.includes('llm') ||
-        snippet.includes('gpt') ||
-        snippet.includes('anthropic') ||
-        snippet.includes('chat') ||
-        snippet.includes('completion') ||
-        snippet.includes('prompt');
+        llmKeywords.some(keyword => fileName.includes(keyword)) || 
+        llmKeywords.some(keyword => snippet.includes(keyword));
       
       // RAG/Vector DB patterns for data leakage
+      const ragKeywords = [
+        'rag', 'vector', 'embed', 'chromadb', 'pinecone', 'weaviate', 'qdrant', 'faiss',
+        'index', 'search', 'retrieval', 'retriever', 'retrieve', 'document', 'knowledge', 
+        'database', 'store', 'langchain', 'llamaindex', 'llama-index'
+      ];
+      
+      // Check if any RAG keyword is in the file name or snippet
       const isRagRelated = 
-        fileName.includes('rag') || 
-        fileName.includes('vector') || 
-        fileName.includes('embed') ||
-        snippet.includes('chromadb') ||
-        snippet.includes('pinecone') || 
-        snippet.includes('weaviate') ||
-        snippet.includes('qdrant') ||
-        snippet.includes('faiss') ||
-        snippet.includes('vector') ||
-        snippet.includes('embedding');
+        ragKeywords.some(keyword => fileName.includes(keyword)) || 
+        ragKeywords.some(keyword => snippet.includes(keyword));
       
       // API key patterns
-      const isApiKeyRelated =
-        snippet.includes('api_key') ||
-        snippet.includes('apikey') ||
-        snippet.includes('api-key') ||
-        snippet.includes('secret') ||
-        snippet.includes('token');
+      const apiKeyKeywords = [
+        'api_key', 'apikey', 'api-key', 'secret', 'token', 'password', 'credential', 
+        'auth', 'key', 'openai.api_key', 'OPENAI_API_KEY', 'SK-', '.env', 'config', 
+        'environment', 'private'
+      ];
+      
+      // Check if any API key keyword is in the snippet
+      const isApiKeyRelated = apiKeyKeywords.some(keyword => snippet.includes(keyword));
+      
+      // Auto-categorize any code file as potentially LLM-related if it's not yet categorized
+      // and contains certain programming patterns commonly used in AI
+      const aiPatterns = [
+        'import', 'from', 'class', 'function', 'def ', 'async', 'await', 'response', 
+        'request', 'api', 'http', 'fetch', 'axios', '.then', '.post', '.get', 'json'
+      ];
+      
+      // For repositories known to be AI-focused (like kagentic), be more aggressive in categorization
+      const isLikelyAICode = isCodeFile && 
+        (isLlmRelated || isRagRelated || 
+         (aiPatterns.some(pattern => snippet.includes(pattern)) && 
+          (report.confidence_score > 0.7 || // High confidence this is an AI repo
+           fileName.includes('agent') || 
+           fileName.includes('tool'))));
       
       // Associate with prompt injection risk if LLM related
-      if (promptInjectionRisk && isLlmRelated) {
+      if (promptInjectionRisk && (isLlmRelated || isLikelyAICode)) {
         if (!promptInjectionRisk.related_code_references.includes(ref.id)) {
           promptInjectionRisk.related_code_references.push(ref.id);
         }
@@ -162,7 +185,7 @@ const ReportResults = ({ report }: ReportResultsProps) => {
       }
       
       // Associate with hallucination risk if LLM related (LLMs can hallucinate)
-      if (hallucinationRisk && isLlmRelated) {
+      if (hallucinationRisk && (isLlmRelated || isLikelyAICode)) {
         if (!hallucinationRisk.related_code_references.includes(ref.id)) {
           hallucinationRisk.related_code_references.push(ref.id);
         }
