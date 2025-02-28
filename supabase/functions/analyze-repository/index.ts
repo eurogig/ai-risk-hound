@@ -15,6 +15,9 @@ const corsHeaders = {
 // Fetch the OpenAI API key from the environment variable
 const openaiApiKey = Deno.env.get('OPENAI_API_KEY')
 
+// Simple in-memory cache (will reset on function restart)
+const analysisCache = new Map();
+
 // Define the serve function
 serve(async (req) => {
   // This is needed if you're planning to invoke your function from a browser.
@@ -34,6 +37,17 @@ serve(async (req) => {
       return new Response(
         JSON.stringify({ error: 'Repository URL is required' }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
+      );
+    }
+
+    // Check cache first to avoid repeated API calls
+    const cacheKey = `${repositoryUrl}-${JSON.stringify(options)}`;
+    if (analysisCache.has(cacheKey)) {
+      console.log(`Returning cached analysis for ${repositoryUrl}`);
+      const cachedResult = analysisCache.get(cacheKey);
+      return new Response(
+        JSON.stringify(cachedResult),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
@@ -63,14 +77,43 @@ serve(async (req) => {
       console.log(`Debug info: ${JSON.stringify(debugInfo, null, 2)}`);
     }
 
-    // Analyze the repository using OpenAI
-    const analysisResult = await analyzeRepository(repositoryContent, options);
+    // Extract components directly from repository content as a fallback mechanism
+    const extractedComponents = extractComponentsFromRepository(repositoryContent);
 
-    // Return the result
-    return new Response(
-      JSON.stringify({ ...analysisResult, debug: debugInfo }),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
+    try {
+      // Try to analyze with OpenAI first
+      const analysisResult = await analyzeRepository(repositoryContent, options);
+      
+      // Cache the result
+      analysisCache.set(cacheKey, { ...analysisResult, debug: debugInfo });
+      
+      // Return the result
+      return new Response(
+        JSON.stringify({ ...analysisResult, debug: debugInfo }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    } catch (openaiError) {
+      console.error('OpenAI analysis failed:', openaiError);
+      
+      // If OpenAI fails with a rate limit, use the fallback analysis
+      if (openaiError.message.includes('429')) {
+        console.log('Rate limit hit, using fallback analysis mechanism');
+        
+        const fallbackResult = generateFallbackAnalysis(repositoryContent, extractedComponents);
+        
+        // Cache the fallback result
+        analysisCache.set(cacheKey, { ...fallbackResult, debug: debugInfo, fallback: true });
+        
+        // Return the fallback result
+        return new Response(
+          JSON.stringify({ ...fallbackResult, debug: debugInfo, fallback: true }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+      
+      // If it's not a rate limit issue, propagate the error
+      throw openaiError;
+    }
   } catch (error) {
     console.error('Error processing request:', error);
     
@@ -112,48 +155,268 @@ async function analyzeRepository(repositoryContent, options = {}) {
     }
   ];
 
-  // Call OpenAI API
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${openaiApiKey}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      model: "gpt-4",
-      messages: messages,
-      temperature: 0.2,
-      max_tokens: 4000,
-      response_format: { type: "json_object" }
-    })
-  });
-
-  if (!response.ok) {
-    const errorData = await response.text();
-    console.error("OpenAI API error:", errorData);
-    throw new Error(`OpenAI API error: ${response.status}`);
-  }
-
-  const result = await response.json();
-  
   try {
-    // Parse the content as JSON
-    const analysisResult = JSON.parse(result.choices[0].message.content);
+    // Call OpenAI API with proper error handling and retries
+    const response = await fetchWithRetry('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${openaiApiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: "gpt-4-0125-preview", // Using the preview model as it's often less busy
+        messages: messages,
+        temperature: 0.2,
+        max_tokens: 4000,
+        response_format: { type: "json_object" }
+      })
+    }, 2); // Retry up to 2 times
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      console.error("OpenAI API error:", errorData);
+      
+      // Check for rate limit error (429)
+      if (response.status === 429) {
+        throw new Error(`OpenAI API error: 429`);
+      }
+      
+      throw new Error(`OpenAI API error: ${response.status}`);
+    }
+
+    const result = await response.json();
     
-    // Fill in pre-extracted AI components if OpenAI didn't find any
-    if (!analysisResult.ai_components_detected || analysisResult.ai_components_detected.length === 0) {
-      analysisResult.ai_components_detected = aiComponentsFromMetadata.map(component => ({
-        name: component.name,
-        type: component.type || "Library",
-        confidence: 0.9
-      }));
+    try {
+      // Parse the content as JSON
+      const analysisResult = JSON.parse(result.choices[0].message.content);
+      
+      // Fill in pre-extracted AI components if OpenAI didn't find any
+      if (!analysisResult.ai_components_detected || analysisResult.ai_components_detected.length === 0) {
+        analysisResult.ai_components_detected = aiComponentsFromMetadata.map(component => ({
+          name: component.name,
+          type: component.type || "Library",
+          confidence: 0.9
+        }));
+      }
+      
+      return analysisResult;
+    } catch (error) {
+      console.error("Error parsing OpenAI response:", error);
+      throw new Error("Error parsing the analysis result from OpenAI.");
+    }
+  } catch (error) {
+    console.error("Error in OpenAI API call:", error);
+    throw error; // Propagate the error to be handled by the caller
+  }
+}
+
+// Helper function for fetch with retry
+async function fetchWithRetry(url, options, retries = 3, backoff = 300) {
+  try {
+    return await fetch(url, options);
+  } catch (err) {
+    if (retries <= 0) {
+      throw err;
     }
     
-    return analysisResult;
-  } catch (error) {
-    console.error("Error parsing OpenAI response:", error);
-    throw new Error("Error parsing the analysis result from OpenAI.");
+    // Wait before retrying
+    await new Promise(resolve => setTimeout(resolve, backoff));
+    
+    // Retry with exponential backoff
+    return fetchWithRetry(url, options, retries - 1, backoff * 2);
   }
+}
+
+// Fallback analysis when OpenAI is not available
+function generateFallbackAnalysis(repositoryContent, extractedComponents) {
+  console.log('Generating fallback analysis');
+  
+  // Extract metadata files and AI components
+  const metadataFiles = identifyMetadataFiles(repositoryContent.files);
+  const aiComponentsFromMetadata = extractAIComponentsFromMetadata(metadataFiles);
+  
+  // Find code references using direct pattern matching
+  const codeReferences = findCodeReferences(repositoryContent.files, aiComponentsFromMetadata);
+  
+  // Identify security risks based on components and patterns
+  const securityRisks = identifySecurityRisks(repositoryContent.files, aiComponentsFromMetadata, codeReferences);
+  
+  return {
+    ai_components_detected: aiComponentsFromMetadata.map(component => ({
+      name: component.name,
+      type: component.type || "Library",
+      confidence: 0.85
+    })),
+    security_risks: securityRisks,
+    code_references: codeReferences,
+    confidence_score: 0.75,
+    remediation_suggestions: generateRemediationSuggestions(securityRisks),
+    analysis_method: "Pattern-based (OpenAI API unavailable)"
+  };
+}
+
+// Extract components directly from repository
+function extractComponentsFromRepository(repositoryContent) {
+  const metadataFiles = identifyMetadataFiles(repositoryContent.files);
+  return extractAIComponentsFromMetadata(metadataFiles);
+}
+
+// Function to find code references using pattern matching
+function findCodeReferences(files, aiComponents) {
+  const codeReferences = [];
+  let refId = 1;
+  
+  // Get names of AI components to search for
+  const componentNames = aiComponents.map(comp => comp.name.toLowerCase());
+  
+  files.forEach(file => {
+    // Focus on Python, JavaScript, and other code files
+    if (!['.py', '.js', '.ts', '.jsx', '.tsx', '.java'].includes(file.extension)) {
+      return;
+    }
+    
+    const lines = file.content.split('\n');
+    
+    lines.forEach((line, lineIndex) => {
+      const lineNumber = lineIndex + 1;
+      
+      // Check for imports or usage of AI components
+      for (const componentName of componentNames) {
+        const lowerLine = line.toLowerCase();
+        
+        // Python-style imports
+        if (file.extension === '.py' && 
+            (lowerLine.includes(`import ${componentName}`) || 
+             lowerLine.includes(`from ${componentName}`) ||
+             lowerLine.match(new RegExp(`${componentName}\\.\\w+`)))) {
+          
+          codeReferences.push({
+            id: `ref_${refId++}`,
+            file: file.path,
+            line: lineNumber,
+            snippet: line.trim(),
+            verified: true
+          });
+        }
+        
+        // JavaScript/TypeScript imports
+        if (['.js', '.ts', '.jsx', '.tsx'].includes(file.extension) &&
+            (lowerLine.includes(`import`) && lowerLine.includes(componentName) ||
+             lowerLine.includes(`require`) && lowerLine.includes(componentName))) {
+          
+          codeReferences.push({
+            id: `ref_${refId++}`,
+            file: file.path,
+            line: lineNumber,
+            snippet: line.trim(),
+            verified: true
+          });
+        }
+        
+        // Java imports
+        if (file.extension === '.java' &&
+            lowerLine.includes(`import`) && lowerLine.includes(componentName)) {
+          
+          codeReferences.push({
+            id: `ref_${refId++}`,
+            file: file.path,
+            line: lineNumber,
+            snippet: line.trim(),
+            verified: true
+          });
+        }
+      }
+      
+      // Look for API keys and credentials
+      if (line.match(/api[_-]?key|secret|password|credential|token/i) && 
+          line.match(/=|\:|const|let|var/) &&
+          !line.match(/process\.env|os\.environ|getenv|System\.getenv/)) {
+        
+        codeReferences.push({
+          id: `ref_${refId++}`,
+          file: file.path,
+          line: lineNumber,
+          snippet: line.trim(),
+          verified: true,
+          securityRisk: true
+        });
+      }
+    });
+  });
+  
+  return codeReferences;
+}
+
+// Identify security risks based on components and patterns
+function identifySecurityRisks(files, aiComponents, codeReferences) {
+  const risks = [];
+  
+  // Check for hardcoded credentials
+  const credentialRefs = codeReferences.filter(ref => ref.securityRisk);
+  if (credentialRefs.length > 0) {
+    risks.push({
+      risk: "Hardcoded Credentials",
+      severity: "high",
+      description: "Potential API keys or credentials found in code",
+      related_code_references: credentialRefs.map(ref => ref.id)
+    });
+  }
+  
+  // Check for RAG components alongside LLM usage
+  const hasLLM = aiComponents.some(comp => 
+    comp.name.toLowerCase() === 'openai' || 
+    comp.name.toLowerCase().includes('llm') ||
+    comp.name.toLowerCase().includes('gpt') ||
+    comp.name.toLowerCase() === 'langchain'
+  );
+  
+  const hasVectorDB = aiComponents.some(comp => 
+    ['faiss', 'pinecone', 'weaviate', 'chromadb', 'qdrant'].includes(comp.name.toLowerCase()) ||
+    comp.type?.toLowerCase().includes('vector')
+  );
+  
+  const hasEmbeddings = aiComponents.some(comp => 
+    comp.name.toLowerCase().includes('embedding') ||
+    comp.name.toLowerCase() === 'sentence-transformers'
+  );
+  
+  // If we have LLM + (Vector DB or Embeddings), flag RAG-related risks
+  if (hasLLM && (hasVectorDB || hasEmbeddings)) {
+    risks.push({
+      risk: "Potential for Data Leakage via LLM",
+      severity: "medium",
+      description: "RAG components detected alongside LLM usage, which may present data leakage risks if not properly configured",
+      related_code_references: codeReferences
+        .filter(ref => ref.snippet.toLowerCase().includes('embed') || ref.snippet.toLowerCase().includes('vector'))
+        .map(ref => ref.id)
+    });
+  }
+  
+  return risks;
+}
+
+// Generate remediation suggestions based on identified risks
+function generateRemediationSuggestions(securityRisks) {
+  const suggestions = [];
+  
+  securityRisks.forEach(risk => {
+    if (risk.risk === "Hardcoded Credentials") {
+      suggestions.push("Replace hardcoded API keys and credentials with environment variables or a secure secret management solution");
+      suggestions.push("Implement a secrets manager or environment variable solution for credential management");
+    }
+    
+    if (risk.risk === "Potential for Data Leakage via LLM") {
+      suggestions.push("Implement proper data filtering and sanitization before sending to LLM");
+      suggestions.push("Use a retrieval filtering mechanism to prevent sensitive data from being included in context");
+      suggestions.push("Consider implementing LLM guardrails to detect and prevent potential data leakage");
+    }
+  });
+  
+  // Add general AI security best practices
+  suggestions.push("Implement rate limiting for all AI API calls");
+  suggestions.push("Add input validation and sanitization for all user inputs used in AI contexts");
+  
+  return suggestions;
 }
 
 // Function to fetch repository content from GitHub
