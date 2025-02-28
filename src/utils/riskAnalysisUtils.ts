@@ -208,6 +208,23 @@ export const enhanceCodeReferences = (
     systemPromptLeakage: "hardcoded system prompts",
   };
 
+  // Standardize risk fields across all risks
+  securityRisks.forEach(risk => {
+    if (!risk) return;
+    
+    // Standardize risk field name (use risk field if it exists, otherwise use risk_name)
+    if (!risk.risk && risk.risk_name) {
+      risk.risk = risk.risk_name;
+    } else if (!risk.risk_name && risk.risk) {
+      risk.risk_name = risk.risk;
+    }
+    
+    // Ensure related_code_references exists
+    if (!risk.related_code_references) {
+      risk.related_code_references = [];
+    }
+  });
+
   // Process code references to detect hardcoded system prompts
   const { promptRisk, promptReferences } = detectSystemPrompts(verifiedCodeReferences);
   
@@ -276,33 +293,67 @@ export const enhanceCodeReferences = (
     }
   });
 
-  // Find all security risks
-  const promptInjectionRisk = securityRisks.find((risk) => {
-    const riskName = risk.risk || risk.risk_name;
-    return riskName && riskName.toLowerCase().includes(riskTypes.promptInjection);
-  });
-
-  const dataLeakageRisk = securityRisks.find((risk) => {
-    const riskName = risk.risk || risk.risk_name;
-    return riskName && riskName.toLowerCase().includes(riskTypes.dataLeakage);
-  });
-
-  const hallucinationRisk = securityRisks.find((risk) => {
-    const riskName = risk.risk || risk.risk_name;
-    return riskName && riskName.toLowerCase().includes(riskTypes.hallucination);
-  });
-
-  const apiKeyExposureRisk = securityRisks.find((risk) => {
-    const riskName = risk.risk || risk.risk_name;
-    return riskName && riskName.toLowerCase().includes(riskTypes.apiKeyExposure);
-  });
-
-  // Initialize related_code_references arrays if they don't exist
-  securityRisks.forEach((risk) => {
-    if (risk && !risk.related_code_references) {
-      risk.related_code_references = [];
+  // Check for all six core risk types and create them if they don't exist
+  const findOrCreateRisk = (type: string, severity: string, description: string): SecurityRisk => {
+    const existingRisk = securityRisks.find(risk => {
+      const riskName = risk.risk || risk.risk_name;
+      return riskName && riskName.toLowerCase().includes(type.toLowerCase());
+    });
+    
+    if (existingRisk) {
+      return existingRisk;
     }
-  });
+    
+    // Create new risk if it doesn't exist
+    const newRisk: SecurityRisk = {
+      risk: type,
+      risk_name: type,
+      severity: severity,
+      description: description,
+      related_code_references: [],
+      owasp_category: owaspCategoryMap[type.toLowerCase()]
+    };
+    
+    securityRisks.push(newRisk);
+    return newRisk;
+  };
+
+  // Ensure all six core risk types exist
+  const promptInjectionRisk = findOrCreateRisk(
+    "Prompt Injection",
+    "High",
+    "User inputs could manipulate the LLM's behavior by altering its prompt instructions."
+  );
+  
+  const dataLeakageRisk = findOrCreateRisk(
+    "Data Leakage via LLM",
+    "Medium",
+    "LLM responses might inadvertently expose sensitive data or training information."
+  );
+  
+  const hallucinationRisk = findOrCreateRisk(
+    "Hallucination",
+    "Medium",
+    "The LLM may generate incorrect or fabricated information presented as factual."
+  );
+  
+  const apiKeyExposureRisk = findOrCreateRisk(
+    "API Key Exposure",
+    "High",
+    "API keys or credentials may be exposed in the codebase."
+  );
+  
+  const modelPoisoningRisk = findOrCreateRisk(
+    "Model Poisoning",
+    "Medium",
+    "The LLM could be influenced by adversarial inputs or poisoned training data."
+  );
+  
+  const systemPromptLeakageRisk = findOrCreateRisk(
+    "Hardcoded System Prompts",
+    "Medium",
+    "Hardcoded system prompts in the codebase can reveal sensitive information or create vulnerabilities."
+  );
 
   // Associate code references with appropriate risks
   verifiedCodeReferences.forEach((ref) => {
@@ -400,7 +451,19 @@ export const enhanceCodeReferences = (
         hallucinationRisk.related_code_references.push(ref.id);
       }
     }
+    
+    // Associate with model poisoning risk if LLM related (LLMs can be poisoned)
+    if (modelPoisoningRisk && (isLlmRelated || isLikelyAICode)) {
+      if (!modelPoisoningRisk.related_code_references.includes(ref.id)) {
+        modelPoisoningRisk.related_code_references.push(ref.id);
+      }
+    }
   });
 
-  return securityRisks;
+  // Remove any risks that don't have any related code references
+  const risksWithReferences = securityRisks.filter(
+    risk => risk && risk.related_code_references && risk.related_code_references.length > 0
+  );
+  
+  return risksWithReferences;
 };

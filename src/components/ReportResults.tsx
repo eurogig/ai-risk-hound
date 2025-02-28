@@ -91,6 +91,30 @@ const ReportResults = ({ report }: ReportResultsProps) => {
     
     console.log("Enhanced security risks:", JSON.stringify(enhancedSecurityRisks, null, 2));
     
+    // Count the different types of risks to make sure we're detecting all of them
+    const riskTypes = {
+      promptInjection: 0,
+      dataLeakage: 0,
+      hallucination: 0,
+      apiKeyExposure: 0,
+      modelPoisoning: 0,
+      systemPromptLeakage: 0
+    };
+    
+    enhancedSecurityRisks.forEach(risk => {
+      if (!risk) return;
+      const riskName = (risk.risk || risk.risk_name || "").toLowerCase();
+      
+      if (riskName.includes("prompt injection")) riskTypes.promptInjection++;
+      if (riskName.includes("data leakage")) riskTypes.dataLeakage++;
+      if (riskName.includes("hallucination")) riskTypes.hallucination++;
+      if (riskName.includes("api key exposure")) riskTypes.apiKeyExposure++;
+      if (riskName.includes("model poisoning")) riskTypes.modelPoisoning++;
+      if (riskName.includes("system prompt") || riskName.includes("hardcoded")) riskTypes.systemPromptLeakage++;
+    });
+    
+    console.log("Risk type counts:", riskTypes);
+    
     // Get code references that aren't related to any security risks
     const unrelatedCodeReferences = getUnrelatedCodeReferences(
       enhancedSecurityRisks,
