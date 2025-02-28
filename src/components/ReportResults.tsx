@@ -78,57 +78,6 @@ const ReportResults = ({ report }: ReportResultsProps) => {
     });
   };
 
-  // Helper function to check if we have RAG components in the code
-  const hasRAGComponents = () => {
-    const ragKeywords = ['faiss', 'pinecone', 'weaviate', 'chromadb', 'qdrant', 'embeddings', 'vector'];
-    return verifiedCodeReferences.some(ref => 
-      ragKeywords.some(keyword => ref.snippet.toLowerCase().includes(keyword))
-    );
-  };
-
-  // Helper function to check if we have LLM usage in the code
-  const hasLLMUsage = () => {
-    const llmKeywords = ['openai', 'gpt', 'language model', 'llm', 'chatgpt', 'completion'];
-    return verifiedCodeReferences.some(ref => 
-      llmKeywords.some(keyword => ref.snippet.toLowerCase().includes(keyword))
-    );
-  };
-  
-  // Determine which risks to show
-  const filteredRisks = report.security_risks.map(risk => {
-    // For data leakage risks, only show if both RAG and LLM are detected
-    if (risk.risk.toLowerCase().includes('data leakage')) {
-      const ragDetected = hasRAGComponents();
-      const llmDetected = hasLLMUsage();
-      
-      if (ragDetected && llmDetected) {
-        return {
-          ...risk,
-          show: true,
-          reason: "Both RAG components and LLM usage detected"
-        };
-      } else {
-        return {
-          ...risk,
-          show: false,
-          reason: ragDetected 
-            ? "Missing LLM usage evidence" 
-            : llmDetected 
-              ? "Missing RAG component evidence" 
-              : "Missing both RAG and LLM evidence"
-        };
-      }
-    }
-    
-    // For other risks, check if we have any related code references
-    const relatedRefs = findRelatedCodeReferences(risk.risk);
-    return {
-      ...risk,
-      show: relatedRefs.length > 0,
-      reason: relatedRefs.length > 0 ? "Found related code evidence" : "No related code evidence found"
-    };
-  });
-
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
       <Alert className="bg-yellow-50 border-yellow-200">
@@ -195,56 +144,54 @@ const ReportResults = ({ report }: ReportResultsProps) => {
           <CardTitle className="text-xl">Security Risks</CardTitle>
         </CardHeader>
         <CardContent>
-          {filteredRisks.some(risk => risk.show) ? (
+          {report.security_risks.length > 0 ? (
             <div className="space-y-6">
-              {filteredRisks
-                .filter(risk => risk.show)
-                .map((risk, index) => {
-                  // Get code references related to this specific risk
-                  const relatedReferences = findRelatedCodeReferences(risk.risk);
-                  
-                  return (
-                    <div key={index} className="space-y-3">
-                      <div className="p-3 rounded-md bg-gray-50">
-                        <div className="flex items-center justify-between mb-1">
-                          <span className="font-medium">{risk.risk}</span>
-                          <Badge className={getSeverityColor(risk.severity)}>
-                            {risk.severity}
-                          </Badge>
-                        </div>
-                        <p className="text-sm text-gray-600">{risk.description}</p>
+              {report.security_risks.map((risk, index) => {
+                // Get code references related to this specific risk
+                const relatedReferences = findRelatedCodeReferences(risk.risk);
+                
+                return (
+                  <div key={index} className="space-y-3">
+                    <div className="p-3 rounded-md bg-gray-50">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="font-medium">{risk.risk}</span>
+                        <Badge className={getSeverityColor(risk.severity)}>
+                          {risk.severity}
+                        </Badge>
                       </div>
-                      
-                      {/* Code Evidence for this risk */}
-                      {relatedReferences.length > 0 && (
-                        <div className="ml-4 border-l-2 border-gray-200 pl-4">
-                          <p className="text-sm text-gray-500 mb-2">Evidence found in code:</p>
-                          <Accordion type="single" collapsible className="w-full">
-                            {relatedReferences.map((reference, refIndex) => (
-                              <AccordionItem key={refIndex} value={`risk-${index}-ref-${refIndex}`}>
-                                <AccordionTrigger className="hover:no-underline text-sm">
-                                  <div className="flex items-center text-left">
-                                    <span className="font-medium">{reference.file}</span>
-                                    <span className="ml-2 text-sm text-gray-500">Line {reference.line}</span>
-                                  </div>
-                                </AccordionTrigger>
-                                <AccordionContent>
-                                  <div className="p-3 rounded-md font-mono text-sm overflow-x-auto bg-gray-100">
-                                    {reference.snippet}
-                                  </div>
-                                </AccordionContent>
-                              </AccordionItem>
-                            ))}
-                          </Accordion>
-                        </div>
-                      )}
+                      <p className="text-sm text-gray-600">{risk.description}</p>
                     </div>
-                  );
-                })}
+                    
+                    {/* Code Evidence for this risk - only shown if there are relevant references */}
+                    {relatedReferences.length > 0 && (
+                      <div className="ml-4 border-l-2 border-gray-200 pl-4">
+                        <p className="text-sm text-gray-500 mb-2">Evidence found in code:</p>
+                        <Accordion type="single" collapsible className="w-full">
+                          {relatedReferences.map((reference, refIndex) => (
+                            <AccordionItem key={refIndex} value={`risk-${index}-ref-${refIndex}`}>
+                              <AccordionTrigger className="hover:no-underline text-sm">
+                                <div className="flex items-center text-left">
+                                  <span className="font-medium">{reference.file}</span>
+                                  <span className="ml-2 text-sm text-gray-500">Line {reference.line}</span>
+                                </div>
+                              </AccordionTrigger>
+                              <AccordionContent>
+                                <div className="p-3 rounded-md font-mono text-sm overflow-x-auto bg-gray-100">
+                                  {reference.snippet}
+                                </div>
+                              </AccordionContent>
+                            </AccordionItem>
+                          ))}
+                        </Accordion>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           ) : (
             <div className="p-4 text-center text-gray-500">
-              No verified security risks detected in this repository.
+              No security risks detected in this repository.
             </div>
           )}
         </CardContent>
@@ -261,9 +208,9 @@ const ReportResults = ({ report }: ReportResultsProps) => {
               {verifiedCodeReferences
                 .filter(ref => 
                   // Only show references that haven't been displayed with security risks
-                  !filteredRisks
-                    .filter(risk => risk.show)
-                    .some(risk => findRelatedCodeReferences(risk.risk).includes(ref))
+                  !report.security_risks.some(risk => 
+                    findRelatedCodeReferences(risk.risk).includes(ref)
+                  )
                 )
                 .map((reference, index) => (
                   <AccordionItem key={index} value={`item-${index}`}>
