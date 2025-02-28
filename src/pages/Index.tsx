@@ -37,6 +37,7 @@ const Index = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [report, setReport] = useState<RepositoryReport | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [debugLogs, setDebugLogs] = useState<string[]>([]);
   const { toast } = useToast();
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -56,6 +57,7 @@ const Index = () => {
     
     setIsLoading(true);
     setError(null);
+    setDebugLogs([]); // Clear previous logs
     
     try {
       // Use hardcoded Supabase URL and key
@@ -65,6 +67,7 @@ const Index = () => {
       // Use the comprehensive analysis function instead of the simplified one
       const endpoint = `${supabaseUrl}/functions/v1/analyze-repository`;
       
+      addLog(`Sending request to: ${endpoint}`);
       console.log("Sending request to:", endpoint);
       
       toast({
@@ -84,6 +87,12 @@ const Index = () => {
           3. If uncertain about specific files, focus on identifying patterns and general concerns instead.
           4. If you cannot find specific code references, leave that section empty rather than making suggestions.
           
+          IMPORTANT: This repository may have a nested structure. Make sure to:
+          - Recursively check all directories and subdirectories
+          - Look for all requirements.txt, package.json, or other dependency files in ALL subdirectories
+          - Pay special attention to Python files (.py) that may contain imports of AI libraries
+          - Check for OpenAI, LangChain, HuggingFace, and other AI framework imports or usages
+          
           Specifically look for these RAG (Retrieval Augmented Generation) components:
           - Vector databases: FAISS, Pinecone, Weaviate, ChromaDB, Qdrant
           - Embedding generation libraries: sentence-transformers, OpenAI embeddings, HuggingFace embeddings
@@ -91,8 +100,11 @@ const Index = () => {
           
           Only flag "Potential for Data Leakage via LLM" as a security risk if RAG components are detected alongside LLM usage.
           Without RAG components, standard LLM integration poses lower data leakage risk.`
-        }
+        },
+        debugMode: true // Enable detailed debug information
       };
+      
+      addLog(`Payload: ${JSON.stringify(payload, null, 2)}`);
       
       const response = await fetch(endpoint, {
         method: 'POST',
@@ -108,13 +120,36 @@ const Index = () => {
         try {
           const errorData = await response.json();
           errorMessage = errorData.error || `HTTP error: ${response.status}`;
+          addLog(`Error response: ${JSON.stringify(errorData, null, 2)}`);
         } catch (e) {
           errorMessage = `HTTP error: ${response.status}`;
+          addLog(`Failed to parse error response: ${e.message}`);
         }
         throw new Error(errorMessage);
       }
       
+      addLog("Received successful response");
       const data = await response.json();
+      
+      if (data.debug) {
+        addLog(`Debug info: ${JSON.stringify(data.debug, null, 2)}`);
+        console.log("Debug info:", data.debug);
+      }
+      
+      // Log some statistics about what was found
+      if (data.code_references) {
+        addLog(`Found ${data.code_references.length} code references`);
+        const fileTypes = new Set(data.code_references.map(ref => {
+          const parts = ref.file.split('.');
+          return parts.length > 1 ? parts.pop() : 'unknown';
+        }));
+        addLog(`File types found: ${Array.from(fileTypes).join(', ')}`);
+      }
+      
+      if (data.ai_components_detected) {
+        addLog(`Found ${data.ai_components_detected.length} AI components`);
+      }
+      
       setReport(data);
       
       toast({
@@ -123,6 +158,7 @@ const Index = () => {
       });
     } catch (err) {
       console.error('Error analyzing repository:', err);
+      addLog(`Error: ${err.message || "Unknown error"}`);
       setError(err.message || "Failed to analyze repository. Please check the URL and try again.");
       
       toast({
@@ -133,6 +169,11 @@ const Index = () => {
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const addLog = (message: string) => {
+    console.log(message);
+    setDebugLogs(prev => [...prev, `[${new Date().toISOString()}] ${message}`]);
   };
 
   return (
@@ -182,6 +223,28 @@ const Index = () => {
               </Button>
             </form>
           </Card>
+          
+          {/* Debug Logs Panel - Collapsible */}
+          {debugLogs.length > 0 && (
+            <Card className="p-4 bg-gray-800 text-white overflow-auto max-h-60">
+              <div className="flex justify-between items-center mb-2">
+                <h3 className="text-sm font-mono">Debug Logs</h3>
+                <Button 
+                  variant="outline" 
+                  size="sm"
+                  className="h-6 text-xs border-gray-600 text-gray-300 hover:text-white hover:bg-gray-700"
+                  onClick={() => setDebugLogs([])}
+                >
+                  Clear Logs
+                </Button>
+              </div>
+              <div className="space-y-1 font-mono text-xs">
+                {debugLogs.map((log, index) => (
+                  <div key={index} className="whitespace-pre-wrap break-all">{log}</div>
+                ))}
+              </div>
+            </Card>
+          )}
           
           {report && !isLoading && (
             <ReportResults report={report} />
