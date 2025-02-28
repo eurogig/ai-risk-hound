@@ -62,52 +62,83 @@ export const getUnrelatedCodeReferences = (
   return verifiedCodeReferences.filter((ref) => !allRiskRefIds.has(ref.id));
 };
 
-// Map risk types to OWASP LLM Top 10 categories
+// Map risk types to OWASP LLM Top 10 categories (updated to latest version)
 const owaspCategoryMap: Record<string, { id: string; name: string; description: string }> = {
   "prompt injection": {
     id: "LLM01",
     name: "Prompt Injection",
-    description: "Manipulating LLM behavior by crafting inputs that exploit its core functionality to produce harmful, unauthorized, or unintended outputs."
+    description: "Manipulating LLM behavior through crafted inputs to produce harmful or unauthorized outputs."
   },
-  "data leakage": {
+  "insecure output handling": {
+    id: "LLM02", 
+    name: "Insecure Output Handling",
+    description: "Failure to properly validate or sanitize LLM-generated content before using it in applications."
+  },
+  "training data poisoning": {
+    id: "LLM03",
+    name: "Training Data Poisoning", 
+    description: "Manipulating an LLM's training data to induce harmful behaviors or create backdoors."
+  },
+  "model denial of service": {
+    id: "LLM04",
+    name: "Model Denial of Service",
+    description: "Exploiting LLM resource consumption to degrade performance or cause excessive costs."
+  },
+  "supply chain vulnerabilities": {
+    id: "LLM05", 
+    name: "Supply Chain Vulnerabilities",
+    description: "Weaknesses in the tools, libraries, and integrations that support LLM applications."
+  },
+  "sensitive information disclosure": {
+    id: "LLM06",
+    name: "Sensitive Information Disclosure",
+    description: "LLMs may reveal sensitive information from their training data or previous interactions."
+  },
+  "insecure plugin design": {
     id: "LLM07",
-    name: "Data Leakage",
-    description: "LLMs may inadvertently memorize and reveal sensitive information from their training data or collected through interactions."
+    name: "Insecure Plugin Design",
+    description: "Vulnerabilities in extensions that expand LLM functionality, potentially bypassing security boundaries."
   },
-  "hallucination": {
+  "excessive agency": {
     id: "LLM08",
     name: "Excessive Agency",
-    description: "When LLMs act beyond their authorized scope or make decisions without sufficient oversight, leading to unintended consequences."
+    description: "When LLMs act beyond their authorized scope or make decisions without sufficient oversight."
+  },
+  "overreliance": {
+    id: "LLM09",
+    name: "Overreliance",
+    description: "Excessive trust in LLM outputs without verification, leading to propagation of harmful information."
+  },
+  "model theft": {
+    id: "LLM10",
+    name: "Model Theft",
+    description: "Unauthorized access to proprietary LLM weights, architecture, or training data."
+  },
+  // Additional mappings for common risk types that might not directly match the category names
+  "data leakage": {
+    id: "LLM06",
+    name: "Sensitive Information Disclosure",
+    description: "LLMs may reveal sensitive information from their training data or previous interactions."
+  },
+  "hallucination": {
+    id: "LLM09",
+    name: "Overreliance",
+    description: "Excessive trust in LLM outputs without verification, leading to propagation of harmful information."
   },
   "api key exposure": {
     id: "LLM05",
     name: "Supply Chain Vulnerabilities",
-    description: "Weaknesses in the ecosystem of tools, libraries, and integrations that support LLM applications, creating attack vectors."
+    description: "Weaknesses in the tools, libraries, and integrations that support LLM applications."
   },
   "model poisoning": {
-    id: "LLM06",
-    name: "Insecure Plugins",
-    description: "Exploitable weaknesses in plugins and extensions that expand LLM functionality, potentially bypassing security boundaries."
-  },
-  "insufficient access control": {
     id: "LLM03",
     name: "Training Data Poisoning",
-    description: "Manipulating an LLM's training data to induce harmful behaviors or create backdoors that can be exploited later."
-  },
-  "sensitive data exposure": {
-    id: "LLM04",
-    name: "Sensitive Information Disclosure",
-    description: "LLMs may reveal sensitive information from previous interactions or their training data if prompted correctly."
-  },
-  "insecure output handling": {
-    id: "LLM09",
-    name: "Overreliance",
-    description: "Excessive trust in LLM outputs without verification, potentially leading to propagation of incorrect or harmful information."
+    description: "Manipulating an LLM's training data to induce harmful behaviors or create backdoors."
   },
   "denial of service": {
-    id: "LLM10",
-    name: "Denial of Service",
-    description: "Exploiting LLM resource consumption to degrade application performance or cause excessive costs through specially crafted inputs."
+    id: "LLM04",
+    name: "Model Denial of Service",
+    description: "Exploiting LLM resource consumption to degrade performance or cause excessive costs."
   }
 };
 
@@ -139,12 +170,12 @@ export const enhanceCodeReferences = (
         }
       }
       
-      // Default to LLM02 Security Control Failure if no specific match
+      // Default to LLM02 Insecure Output Handling if no specific match
       if (!risk.owasp_category) {
         risk.owasp_category = {
           id: "LLM02",
-          name: "Security Control Failure",
-          description: "Failures in implementing adequate security controls in LLM applications, leading to vulnerabilities."
+          name: "Insecure Output Handling",
+          description: "Failure to properly validate or sanitize LLM-generated content before using it in applications."
         };
       }
     }
