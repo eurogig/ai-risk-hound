@@ -28,6 +28,7 @@ interface RepositoryReport {
     line: number;
     snippet: string;
     verified?: boolean;
+    relatedTo?: string; // Security risk this reference is related to
   }[];
   confidence_score: number;
   remediation_suggestions: string[];
@@ -55,19 +56,15 @@ const ReportResults = ({ report }: ReportResultsProps) => {
     }
   };
 
-  // For demo purposes, mark all code references as potentially AI-generated/unverified
-  // In a real implementation, this would come from the backend
-  const codeReferences = report.code_references.map(ref => ({
-    ...ref,
-    verified: ref.verified || false
-  }));
+  // Filter out unverified code references
+  const verifiedCodeReferences = report.code_references.filter(ref => ref.verified === true);
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
       <Alert className="bg-yellow-50 border-yellow-200">
         <InfoIcon className="h-4 w-4 text-yellow-600" />
         <AlertDescription className="text-yellow-800">
-          This analysis is powered by AI and may include suggested patterns rather than verified findings. Always verify critical results.
+          This analysis is powered by AI and only displays confirmed findings. The report may not catch all AI components or security risks.
         </AlertDescription>
       </Alert>
       
@@ -122,61 +119,87 @@ const ReportResults = ({ report }: ReportResultsProps) => {
         </Card>
       )}
 
-      {/* Security Risks Section */}
+      {/* Security Risks Section with Connected Code References */}
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-xl">Security Risks</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="space-y-3">
-            {report.security_risks.map((risk, index) => (
-              <div key={index} className="p-3 rounded-md bg-gray-50">
-                <div className="flex items-center justify-between mb-1">
-                  <span className="font-medium">{risk.risk}</span>
-                  <Badge className={getSeverityColor(risk.severity)}>
-                    {risk.severity}
-                  </Badge>
+          <div className="space-y-6">
+            {report.security_risks.map((risk, index) => {
+              // Find code references related to this risk
+              const relatedReferences = verifiedCodeReferences.filter(
+                ref => ref.relatedTo === risk.risk || 
+                       ref.snippet.toLowerCase().includes(risk.risk.toLowerCase())
+              );
+              
+              return (
+                <div key={index} className="space-y-3">
+                  <div className="p-3 rounded-md bg-gray-50">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="font-medium">{risk.risk}</span>
+                      <Badge className={getSeverityColor(risk.severity)}>
+                        {risk.severity}
+                      </Badge>
+                    </div>
+                    <p className="text-sm text-gray-600">{risk.description}</p>
+                  </div>
+                  
+                  {/* Code Evidence for this risk */}
+                  {relatedReferences.length > 0 && (
+                    <div className="ml-4 border-l-2 border-gray-200 pl-4">
+                      <p className="text-sm text-gray-500 mb-2">Evidence found in code:</p>
+                      <Accordion type="single" collapsible className="w-full">
+                        {relatedReferences.map((reference, refIndex) => (
+                          <AccordionItem key={refIndex} value={`risk-${index}-ref-${refIndex}`}>
+                            <AccordionTrigger className="hover:no-underline text-sm">
+                              <div className="flex items-center text-left">
+                                <span className="font-medium">{reference.file}</span>
+                                <span className="ml-2 text-sm text-gray-500">Line {reference.line}</span>
+                              </div>
+                            </AccordionTrigger>
+                            <AccordionContent>
+                              <div className="p-3 rounded-md font-mono text-sm overflow-x-auto bg-gray-100">
+                                {reference.snippet}
+                              </div>
+                            </AccordionContent>
+                          </AccordionItem>
+                        ))}
+                      </Accordion>
+                    </div>
+                  )}
                 </div>
-                <p className="text-sm text-gray-600">{risk.description}</p>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </CardContent>
       </Card>
 
-      {/* Code References Section */}
-      {codeReferences.length > 0 && (
+      {/* Code References Section (Only if there are references not related to security risks) */}
+      {verifiedCodeReferences.length > 0 && (
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-xl">Code References</CardTitle>
-            <p className="text-sm text-gray-500">These code paths may be suggestions based on AI analysis rather than verified files.</p>
+            <CardTitle className="text-xl">Additional Code References</CardTitle>
           </CardHeader>
           <CardContent>
             <Accordion type="single" collapsible className="w-full">
-              {codeReferences.map((reference, index) => (
-                <AccordionItem key={index} value={`item-${index}`}>
-                  <AccordionTrigger className="hover:no-underline">
-                    <div className="flex items-center text-left">
-                      <span className={`font-medium ${!reference.verified ? 'text-gray-600' : ''}`}>
-                        {reference.file}
-                      </span>
-                      <span className="ml-2 text-sm text-gray-500">Line {reference.line}</span>
-                      {!reference.verified && (
-                        <Badge variant="outline" className="ml-2 bg-amber-50 text-amber-800 border-amber-200">
-                          AI Suggestion
-                        </Badge>
-                      )}
-                    </div>
-                  </AccordionTrigger>
-                  <AccordionContent>
-                    <div className={`p-3 rounded-md font-mono text-sm overflow-x-auto ${
-                      reference.verified ? 'bg-gray-100' : 'bg-amber-50 border border-amber-200'
-                    }`}>
-                      {reference.snippet}
-                    </div>
-                  </AccordionContent>
-                </AccordionItem>
-              ))}
+              {verifiedCodeReferences
+                .filter(ref => !ref.relatedTo) // Only show references not already shown with security risks
+                .map((reference, index) => (
+                  <AccordionItem key={index} value={`item-${index}`}>
+                    <AccordionTrigger className="hover:no-underline">
+                      <div className="flex items-center text-left">
+                        <span className="font-medium">{reference.file}</span>
+                        <span className="ml-2 text-sm text-gray-500">Line {reference.line}</span>
+                      </div>
+                    </AccordionTrigger>
+                    <AccordionContent>
+                      <div className="p-3 rounded-md font-mono text-sm overflow-x-auto bg-gray-100">
+                        {reference.snippet}
+                      </div>
+                    </AccordionContent>
+                  </AccordionItem>
+                ))}
             </Accordion>
           </CardContent>
         </Card>
