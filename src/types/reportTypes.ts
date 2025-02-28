@@ -28,10 +28,15 @@ export interface CodeReference {
   relatedRisks?: string[]; // Risk names this reference is related to
 }
 
+export interface RemediationSuggestion {
+  suggestion: string;
+  [key: string]: any; // Allow for any other properties
+}
+
 export interface RepositoryReport {
   ai_components_detected: AIComponent[];
   security_risks: SecurityRisk[];
   code_references: CodeReference[];
   confidence_score: number;
-  remediation_suggestions: string[];
+  remediation_suggestions: (RemediationSuggestion | string | null)[];
 }

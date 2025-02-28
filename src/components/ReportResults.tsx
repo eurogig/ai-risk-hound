@@ -93,14 +93,21 @@ const ReportResults = ({ report }: ReportResultsProps) => {
     );
 
     // Check remediation suggestions for validity before rendering
-    // Fix: Add proper null check and type check for each suggestion object
     const validRemediationSuggestions = Array.isArray(report.remediation_suggestions) 
-      ? report.remediation_suggestions.filter(suggestion => 
-          suggestion !== null && 
-          typeof suggestion === 'object' && 
-          suggestion.hasOwnProperty('suggestion') && 
-          typeof suggestion.suggestion === 'string'
-        )
+      ? report.remediation_suggestions
+          .filter(suggestion => 
+            suggestion !== null && 
+            typeof suggestion === 'object'
+          )
+          .filter(suggestion => {
+            // This separate filter ensures we don't access properties of null objects
+            if (suggestion && 'suggestion' in suggestion && typeof suggestion.suggestion === 'string') {
+              return true;
+            }
+            return false;
+          })
+          .map(suggestion => suggestion?.suggestion || '')
+          .filter(suggestionText => suggestionText !== '')
       : [];
     
     console.log("Valid remediation suggestions:", validRemediationSuggestions.length);
