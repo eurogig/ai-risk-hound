@@ -15,7 +15,7 @@ const App = () => (
     <TooltipProvider>
       <Toaster />
       <Sonner />
-      <BrowserRouter>
+      <BrowserRouter basename={import.meta.env.DEV ? "/" : "/ai-risk-hound"}>
         <Routes>
           <Route path="/" element={<Index />} />
           <Route path="/history" element={<History />} />
