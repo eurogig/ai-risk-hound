@@ -45,10 +45,17 @@ const Index = () => {
         description: "This comprehensive analysis may take a bit longer. Please wait...",
       });
       
+      // Get user's API key from localStorage
+      const userApiKey = localStorage.getItem("openai_api_key");
+      if (!userApiKey) {
+        throw new Error("No API key found. Please log in again.");
+      }
+      
       // Use the Supabase Functions API through the client instead of hardcoded credentials
       const { data, error: functionError } = await supabase.functions.invoke('analyze-repository', {
         body: {
           repositoryUrl,
+          apiKey: userApiKey, // Pass the user's API key
           options: {
             systemPrompt: `Analyze the GitHub repository and provide insights about AI components and security risks. 
             

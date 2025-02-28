@@ -1,10 +1,28 @@
 
 import { Link, useLocation } from "react-router-dom";
 import { Button } from "@/components/ui/button";
-import { Dog, BarChart2 } from "lucide-react";
+import { Dog, BarChart2, LogOut } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { useToast } from "@/components/ui/use-toast";
 
 const Navigation = () => {
   const location = useLocation();
+  const navigate = useNavigate();
+  const { toast } = useToast();
+
+  const handleLogout = () => {
+    // Remove the API key from localStorage
+    localStorage.removeItem("openai_api_key");
+    localStorage.removeItem("user_email");
+    
+    toast({
+      title: "Logged Out",
+      description: "Your API key has been removed from this device.",
+    });
+    
+    // Redirect to landing page
+    navigate("/");
+  };
 
   return (
     <nav className="bg-white shadow-sm py-4">
@@ -20,9 +38,9 @@ const Navigation = () => {
         </div>
         
         <div className="flex space-x-2">
-          <Link to="/">
+          <Link to="/app">
             <Button 
-              variant={location.pathname === "/" ? "default" : "outline"}
+              variant={location.pathname === "/app" ? "default" : "outline"}
             >
               New Analysis
             </Button>
@@ -35,6 +53,13 @@ const Navigation = () => {
               History
             </Button>
           </Link>
+          <Button 
+            variant="outline" 
+            onClick={handleLogout}
+          >
+            <LogOut className="mr-2 h-4 w-4" />
+            Logout
+          </Button>
         </div>
       </div>
     </nav>
