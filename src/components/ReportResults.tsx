@@ -61,6 +61,58 @@ const ReportResults = ({ report }: ReportResultsProps) => {
   // Filter out unverified code references
   const verifiedCodeReferences = report.code_references.filter(ref => ref.verified === true);
 
+  // Enhance unrelated code refs detection to associate RAG/vector DB refs with data leakage risks
+  const enhanceCodeReferences = () => {
+    // Create a map of risk IDs to risk objects for easy lookup
+    const riskById = new Map();
+    report.security_risks.forEach(risk => {
+      // Risk ID is based on the risk name (lowercase, no spaces)
+      const riskId = risk.risk.toLowerCase().replace(/\s+/g, '_');
+      riskById.set(riskId, risk);
+      
+      // Initialize related_code_references array if it doesn't exist
+      if (!risk.related_code_references) {
+        risk.related_code_references = [];
+      }
+    });
+    
+    // Find data leakage risk if it exists
+    const dataLeakageRisk = report.security_risks.find(risk => 
+      risk.risk.toLowerCase().includes('data leakage')
+    );
+    
+    // Associate RAG/Vector DB references with data leakage risks
+    if (dataLeakageRisk) {
+      verifiedCodeReferences.forEach(ref => {
+        const fileName = ref.file.toLowerCase();
+        const snippet = ref.snippet.toLowerCase();
+        
+        // Check for common RAG/Vector DB patterns in filename or code
+        const isRagRelated = 
+          fileName.includes('rag') || 
+          fileName.includes('vector') || 
+          fileName.includes('embed') ||
+          snippet.includes('chromadb') ||
+          snippet.includes('pinecone') || 
+          snippet.includes('weaviate') ||
+          snippet.includes('qdrant') ||
+          snippet.includes('faiss') ||
+          snippet.includes('vector') ||
+          snippet.includes('embedding');
+        
+        // If it's RAG related and not already associated with this risk, add it
+        if (isRagRelated && !dataLeakageRisk.related_code_references.includes(ref.id)) {
+          dataLeakageRisk.related_code_references.push(ref.id);
+        }
+      });
+    }
+    
+    return report;
+  };
+  
+  // Enhance the report by filling in missing connections
+  const enhancedReport = enhanceCodeReferences();
+
   // Get the code references for a specific security risk using the IDs
   const getRelatedCodeReferences = (risk: { risk: string; related_code_references: string[] }) => {
     return verifiedCodeReferences.filter(ref => 
@@ -104,7 +156,7 @@ const ReportResults = ({ report }: ReportResultsProps) => {
   // Get code references that aren't related to any security risks
   const getUnrelatedCodeReferences = () => {
     const allRiskRefIds = new Set(
-      report.security_risks.flatMap(risk => risk.related_code_references || [])
+      enhancedReport.security_risks.flatMap(risk => risk.related_code_references || [])
     );
     
     return verifiedCodeReferences.filter(ref => !allRiskRefIds.has(ref.id));
@@ -152,9 +204,9 @@ const ReportResults = ({ report }: ReportResultsProps) => {
           <CardTitle className="text-xl">Security Risks</CardTitle>
         </CardHeader>
         <CardContent>
-          {report.security_risks.length > 0 ? (
+          {enhancedReport.security_risks.length > 0 ? (
             <Accordion type="single" collapsible className="w-full">
-              {report.security_risks.map((risk, index) => {
+              {enhancedReport.security_risks.map((risk, index) => {
                 // Get code references related to this specific risk using the IDs
                 const relatedReferences = getRelatedCodeReferences(risk);
                 // Get AI components potentially related to this risk
