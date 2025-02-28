@@ -103,6 +103,9 @@ const Index = () => {
       
       setReport(data);
       
+      // Save the analysis result to the database
+      await saveAnalysisToDatabase(repositoryUrl, data);
+      
       toast({
         title: "Analysis Complete",
         description: "Comprehensive repository analysis has been completed successfully.",
@@ -119,6 +122,33 @@ const Index = () => {
       });
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const saveAnalysisToDatabase = async (repositoryUrl: string, analysisResult: RepositoryReport) => {
+    try {
+      addLog(`Saving analysis results to database for: ${repositoryUrl}`);
+      
+      const { error } = await supabase
+        .from('repository_analyses')
+        .insert({
+          repository_url: repositoryUrl,
+          analysis_result: analysisResult
+        });
+      
+      if (error) {
+        throw error;
+      }
+      
+      addLog('Analysis saved to database successfully');
+    } catch (err) {
+      console.error('Error saving to database:', err);
+      addLog(`Database error: ${err.message}`);
+      toast({
+        title: "Warning",
+        description: "Analysis completed but could not save to history.",
+        variant: "destructive",
+      });
     }
   };
 
