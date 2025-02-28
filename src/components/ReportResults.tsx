@@ -95,18 +95,15 @@ const ReportResults = ({ report }: ReportResultsProps) => {
     // Check remediation suggestions for validity before rendering
     const validRemediationSuggestions = Array.isArray(report.remediation_suggestions) 
       ? report.remediation_suggestions
-          .filter(suggestion => 
-            suggestion !== null && 
-            typeof suggestion === 'object'
-          )
-          .filter(suggestion => {
-            // This separate filter ensures we don't access properties of null objects
-            if (suggestion && 'suggestion' in suggestion && typeof suggestion.suggestion === 'string') {
-              return true;
+          .filter(suggestion => suggestion !== null)
+          .map(suggestion => {
+            if (typeof suggestion === 'string') {
+              return suggestion;
+            } else if (suggestion && typeof suggestion === 'object' && 'suggestion' in suggestion) {
+              return suggestion.suggestion;
             }
-            return false;
+            return '';
           })
-          .map(suggestion => suggestion?.suggestion || '')
           .filter(suggestionText => suggestionText !== '')
       : [];
     

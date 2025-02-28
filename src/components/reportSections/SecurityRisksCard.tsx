@@ -31,7 +31,10 @@ const SecurityRisksCard = ({
   aiComponents
 }: SecurityRisksCardProps) => {
   // Filter to ensure we only process valid security risks
-  const validSecurityRisks = securityRisks.filter(risk => risk && typeof risk === 'object' && risk.risk);
+  const validSecurityRisks = securityRisks.filter(risk => {
+    if (!risk || typeof risk !== 'object') return false;
+    return !!(risk.risk || risk.risk_name); // Must have either risk or risk_name
+  });
   
   return (
     <Card>
@@ -42,6 +45,9 @@ const SecurityRisksCard = ({
         {validSecurityRisks.length > 0 ? (
           <Accordion type="single" collapsible className="w-full">
             {validSecurityRisks.map((risk, index) => {
+              // Get the risk name from either field
+              const riskName = risk.risk || risk.risk_name || "Unknown Risk";
+              
               // Get code references related to this specific risk using the IDs
               const relatedReferences = getRelatedCodeReferences(risk, verifiedCodeReferences);
               // Get AI components potentially related to this risk
@@ -51,7 +57,7 @@ const SecurityRisksCard = ({
                 <AccordionItem key={index} value={`risk-${index}`}>
                   <AccordionTrigger className="hover:no-underline py-3">
                     <div className="flex items-center justify-between w-full pr-4">
-                      <span className="font-medium text-left">{risk.risk}</span>
+                      <span className="font-medium text-left">{riskName}</span>
                       <div className="flex items-center space-x-2">
                         {risk.owasp_category && (
                           <TooltipProvider>

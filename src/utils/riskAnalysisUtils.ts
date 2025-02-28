@@ -4,7 +4,7 @@ import { extractPromptsFromCode, createSystemPromptRisk } from "./promptDetectio
 
 // Get the code references for a specific security risk using the IDs
 export const getRelatedCodeReferences = (
-  risk: { risk: string; related_code_references: string[] },
+  risk: SecurityRisk,
   verifiedCodeReferences: CodeReference[]
 ) => {
   return verifiedCodeReferences.filter(
@@ -14,16 +14,19 @@ export const getRelatedCodeReferences = (
 
 // Get AI components that might be related to a security risk
 export const getRelatedAIComponents = (
-  risk: { risk: string },
+  risk: SecurityRisk,
   aiComponents: AIComponent[]
 ) => {
-  // Add null check for risk.risk
-  if (!risk || !risk.risk) {
+  // Get the risk name from either risk or risk_name field
+  const riskName = risk.risk || risk.risk_name;
+  
+  // Add null check for risk name
+  if (!risk || !riskName) {
     console.error("Invalid risk object in getRelatedAIComponents:", risk);
     return [];
   }
   
-  const riskLower = risk.risk.toLowerCase();
+  const riskLower = riskName.toLowerCase();
 
   // Map risks to relevant component types
   const riskToComponentTypes: Record<string, string[]> = {
@@ -210,9 +213,10 @@ export const enhanceCodeReferences = (
   
   // Add system prompt risk if detected
   if (promptRisk) {
-    const existingPromptRisk = securityRisks.find(risk => 
-      risk && risk.risk && risk.risk.toLowerCase().includes(riskTypes.systemPromptLeakage)
-    );
+    const existingPromptRisk = securityRisks.find(risk => {
+      const riskName = risk.risk || risk.risk_name;
+      return riskName && riskName.toLowerCase().includes(riskTypes.systemPromptLeakage);
+    });
     
     if (existingPromptRisk) {
       // Update existing risk with new references
@@ -238,12 +242,19 @@ export const enhanceCodeReferences = (
 
   // Add OWASP categories to security risks if they don't have them
   securityRisks.forEach(risk => {
-    if (!risk || !risk.risk) {
+    if (!risk) {
       console.error("Invalid risk object:", risk);
       return; // Skip this risk and continue with the next one
     }
     
-    const riskLower = risk.risk.toLowerCase();
+    // Get risk name from either field
+    const riskName = risk.risk || risk.risk_name;
+    if (!riskName) {
+      console.error("Risk object missing both risk and risk_name:", risk);
+      return;
+    }
+    
+    const riskLower = riskName.toLowerCase();
     
     // Find the matching OWASP category
     if (!risk.owasp_category) {
@@ -266,21 +277,25 @@ export const enhanceCodeReferences = (
   });
 
   // Find all security risks
-  const promptInjectionRisk = securityRisks.find((risk) =>
-    risk && risk.risk && risk.risk.toLowerCase().includes(riskTypes.promptInjection)
-  );
+  const promptInjectionRisk = securityRisks.find((risk) => {
+    const riskName = risk.risk || risk.risk_name;
+    return riskName && riskName.toLowerCase().includes(riskTypes.promptInjection);
+  });
 
-  const dataLeakageRisk = securityRisks.find((risk) =>
-    risk && risk.risk && risk.risk.toLowerCase().includes(riskTypes.dataLeakage)
-  );
+  const dataLeakageRisk = securityRisks.find((risk) => {
+    const riskName = risk.risk || risk.risk_name;
+    return riskName && riskName.toLowerCase().includes(riskTypes.dataLeakage);
+  });
 
-  const hallucinationRisk = securityRisks.find((risk) =>
-    risk && risk.risk && risk.risk.toLowerCase().includes(riskTypes.hallucination)
-  );
+  const hallucinationRisk = securityRisks.find((risk) => {
+    const riskName = risk.risk || risk.risk_name;
+    return riskName && riskName.toLowerCase().includes(riskTypes.hallucination);
+  });
 
-  const apiKeyExposureRisk = securityRisks.find((risk) =>
-    risk && risk.risk && risk.risk.toLowerCase().includes(riskTypes.apiKeyExposure)
-  );
+  const apiKeyExposureRisk = securityRisks.find((risk) => {
+    const riskName = risk.risk || risk.risk_name;
+    return riskName && riskName.toLowerCase().includes(riskTypes.apiKeyExposure);
+  });
 
   // Initialize related_code_references arrays if they don't exist
   securityRisks.forEach((risk) => {

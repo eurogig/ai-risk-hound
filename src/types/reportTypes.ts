@@ -12,7 +12,8 @@ export interface AIComponent {
 }
 
 export interface SecurityRisk {
-  risk: string;
+  risk?: string;
+  risk_name?: string; // Added support for alternate field name
   severity: string;
   description: string;
   related_code_references: string[]; // IDs of related code references
