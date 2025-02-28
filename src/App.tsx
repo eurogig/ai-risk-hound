@@ -10,13 +10,16 @@ import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
 
-// Remove the conditional basename as it might be causing issues in Lovable
+// Determine if we're running on GitHub Pages
+const isGitHubPages = window.location.hostname.includes('github.io');
+const basename = isGitHubPages ? '/ai-risk-hound' : '/';
+
 const App = () => (
   <QueryClientProvider client={queryClient}>
     <TooltipProvider>
       <Toaster />
       <Sonner />
-      <BrowserRouter>
+      <BrowserRouter basename={basename}>
         <Routes>
           <Route path="/" element={<Index />} />
           <Route path="/history" element={<History />} />

@@ -10,7 +10,7 @@ export default defineConfig(({ mode }) => ({
     host: "::",
     port: 8080,
   },
-  // Only set the base path for production builds
+  // Use the GitHub Pages base path in production
   base: mode === 'production' ? '/ai-risk-hound/' : '/',
   plugins: [
     react(),
