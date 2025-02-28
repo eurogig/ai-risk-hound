@@ -7,30 +7,8 @@ import { Loader2 } from "lucide-react";
 import ReportResults from "@/components/ReportResults";
 import { useToast } from "@/components/ui/use-toast";
 import Navigation from "@/components/Navigation";
-
-interface RepositoryReport {
-  ai_components_detected: {
-    name: string;
-    type: string;
-    confidence: number;
-  }[];
-  security_risks: {
-    risk: string;
-    severity: string;
-    description: string;
-    related_code_references: string[]; // IDs of related code references
-  }[];
-  code_references: {
-    id: string; // Unique ID for each reference
-    file: string;
-    line: number;
-    snippet: string;
-    verified: boolean;
-    relatedRisks?: string[]; // Risk names this reference is related to
-  }[];
-  confidence_score: number;
-  remediation_suggestions: string[];
-}
+import { supabase } from "@/integrations/supabase/client";
+import { RepositoryReport } from "@/types/reportTypes";
 
 const Index = () => {
   const [repositoryUrl, setRepositoryUrl] = useState("");
@@ -60,76 +38,49 @@ const Index = () => {
     setDebugLogs([]); // Clear previous logs
     
     try {
-      // Use hardcoded Supabase URL and key
-      const supabaseUrl = "https://bnmbrtsyqxqoitrcesgu.supabase.co";
-      const supabaseKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJubWJydHN5cXhxb2l0cmNlc2d1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDA3MDEyNDgsImV4cCI6MjA1NjI3NzI0OH0.PT-jorVmwDQIG0iKQ5bI2nCEClMxkoBv8yfRdu9-7XA";
-      
-      // Use the comprehensive analysis function instead of the simplified one
-      const endpoint = `${supabaseUrl}/functions/v1/analyze-repository`;
-      
-      addLog(`Sending request to: ${endpoint}`);
-      console.log("Sending request to:", endpoint);
+      addLog(`Sending request to analyze repository: ${repositoryUrl}`);
       
       toast({
         title: "Analysis Started",
         description: "This comprehensive analysis may take a bit longer. Please wait...",
       });
       
-      // Include specific system prompt instructions to reduce hallucinations and detect RAG components
-      const payload = {
-        repositoryUrl,
-        options: {
-          systemPrompt: `Analyze the GitHub repository and provide insights about AI components and security risks. 
-          
-          When analyzing repositories:
-          1. Only report code references that you can confirm exist in the repository. 
-          2. Do not invent or hallucinate file paths or code snippets.
-          3. If uncertain about specific files, focus on identifying patterns and general concerns instead.
-          4. If you cannot find specific code references, leave that section empty rather than making suggestions.
-          
-          IMPORTANT: This repository may have a nested structure. Make sure to:
-          - Recursively check all directories and subdirectories
-          - Look for all requirements.txt, package.json, or other dependency files in ALL subdirectories
-          - Pay special attention to Python files (.py) that may contain imports of AI libraries
-          - Check for OpenAI, LangChain, HuggingFace, and other AI framework imports or usages
-          
-          Specifically look for these RAG (Retrieval Augmented Generation) components:
-          - Vector databases: FAISS, Pinecone, Weaviate, ChromaDB, Qdrant
-          - Embedding generation libraries: sentence-transformers, OpenAI embeddings, HuggingFace embeddings
-          - Search integrations for document retrieval
-          
-          Only flag "Potential for Data Leakage via LLM" as a security risk if RAG components are detected alongside LLM usage.
-          Without RAG components, standard LLM integration poses lower data leakage risk.`
-        },
-        debugMode: true // Enable detailed debug information
-      };
-      
-      addLog(`Payload: ${JSON.stringify(payload, null, 2)}`);
-      
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${supabaseKey}`
-        },
-        body: JSON.stringify(payload)
+      // Use the Supabase Functions API through the client instead of hardcoded credentials
+      const { data, error: functionError } = await supabase.functions.invoke('analyze-repository', {
+        body: {
+          repositoryUrl,
+          options: {
+            systemPrompt: `Analyze the GitHub repository and provide insights about AI components and security risks. 
+            
+            When analyzing repositories:
+            1. Only report code references that you can confirm exist in the repository. 
+            2. Do not invent or hallucinate file paths or code snippets.
+            3. If uncertain about specific files, focus on identifying patterns and general concerns instead.
+            4. If you cannot find specific code references, leave that section empty rather than making suggestions.
+            
+            IMPORTANT: This repository may have a nested structure. Make sure to:
+            - Recursively check all directories and subdirectories
+            - Look for all requirements.txt, package.json, or other dependency files in ALL subdirectories
+            - Pay special attention to Python files (.py) that may contain imports of AI libraries
+            - Check for OpenAI, LangChain, HuggingFace, and other AI framework imports or usages
+            
+            Specifically look for these RAG (Retrieval Augmented Generation) components:
+            - Vector databases: FAISS, Pinecone, Weaviate, ChromaDB, Qdrant
+            - Embedding generation libraries: sentence-transformers, OpenAI embeddings, HuggingFace embeddings
+            - Search integrations for document retrieval
+            
+            Only flag "Potential for Data Leakage via LLM" as a security risk if RAG components are detected alongside LLM usage.
+            Without RAG components, standard LLM integration poses lower data leakage risk.`
+          },
+          debugMode: true // Enable detailed debug information
+        }
       });
       
-      if (!response.ok) {
-        let errorMessage;
-        try {
-          const errorData = await response.json();
-          errorMessage = errorData.error || `HTTP error: ${response.status}`;
-          addLog(`Error response: ${JSON.stringify(errorData, null, 2)}`);
-        } catch (e) {
-          errorMessage = `HTTP error: ${response.status}`;
-          addLog(`Failed to parse error response: ${e.message}`);
-        }
-        throw new Error(errorMessage);
+      if (functionError) {
+        throw new Error(functionError.message || "Failed to analyze repository");
       }
       
       addLog("Received successful response");
-      const data = await response.json();
       
       if (data.debug) {
         addLog(`Debug info: ${JSON.stringify(data.debug, null, 2)}`);
