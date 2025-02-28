@@ -1,568 +1,539 @@
 
+// Follow Deno's ES modules approach
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import "https://deno.land/x/xhr@0.1.0/mod.ts";
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.7.1';
 
-interface RepositoryAnalysisRequest {
-  repository_url: string;
-  branch?: string;
-}
-
-interface CodeReference {
-  id: string;
-  file: string;
-  line: number;
-  snippet: string;
-  verified: boolean;
-}
-
-interface SecurityRisk {
-  risk: string;
-  severity: string;
-  description: string;
-  related_code_references: string[];
-  owasp_category?: {
-    id: string;
-    name: string;
-    description: string;
-  };
-}
-
-interface AIComponent {
-  name: string;
-  type: string;
-  confidence: number;
-}
-
-const getOWASPCategory = (risk: string) => {
-  const riskLower = risk.toLowerCase();
-  const categories: Record<string, { id: string; name: string; description: string }> = {
-    "prompt injection": {
-      id: "LLM01:2025",
-      name: "Prompt Injection",
-      description: "A vulnerability where user inputs manipulate the LLM's behavior by altering its prompts."
-    },
-    "sensitive information disclosure": {
-      id: "LLM02:2025", 
-      name: "Sensitive Information Disclosure",
-      description: "Risks involving the exposure of confidential data within the LLM or its applications."
-    },
-    "data leakage": {
-      id: "LLM02:2025",
-      name: "Sensitive Information Disclosure",
-      description: "Risks involving the exposure of confidential data within the LLM or its applications."
-    },
-    "system prompt leakage": {
-      id: "LLM07:2025",
-      name: "System Prompt Leakage",
-      description: "The exposure of system-level prompts that can reveal internal configurations or logic."
-    },
-    "hardcoded system prompts": {
-      id: "LLM07:2025",
-      name: "System Prompt Leakage",
-      description: "The exposure of system-level prompts that can reveal internal configurations or logic."
-    }
-  };
-
-  for (const [key, value] of Object.entries(categories)) {
-    if (riskLower.includes(key)) {
-      return value;
-    }
-  }
-
-  return {
-    id: "LLM05:2025",
-    name: "Improper Output Handling",
-    description: "Issues stemming from inadequate validation, sanitization, or escaping of LLM outputs."
-  };
+// Define cors headers for browser requests
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// Regex patterns for detecting hardcoded prompts
-const PROMPT_PATTERNS = {
-  // Match system prompts in OpenAI API calls and similar patterns
-  OPENAI_SYSTEM: /(\{|\[)\s*["']role["']\s*:\s*["']system["']\s*,\s*["']content["']\s*:\s*["']([^"']+)["']/g,
-  
-  // Match variable assignments for system prompts
-  VARIABLE_ASSIGNMENT: /(const|let|var|SYSTEM_PROMPT|system_prompt|systemPrompt|prompt)\s*=\s*["']([^"']{10,})["']/g,
-  
-  // Match function arguments that might contain prompts
-  FUNCTION_ARGS: /(messages|prompt|system_prompt|systemPrompt)\s*[:=]\s*["']([^"']{10,})["']/g,
-  
-  // Match Python f-strings and multi-line strings
-  PYTHON_STRINGS: /('''|""")([^'"]{10,})('''|""")/g,
-  
-  // Match Python prompt assignments
-  PYTHON_ASSIGNMENT: /(SYSTEM_PROMPT|system_prompt|prompt)\s*=\s*['"]{1,3}([^'"]{10,})['"]{1,3}/g,
-};
+// Helper function to check if a string is a valid GitHub URL
+function isValidGitHubUrl(url) {
+  if (!url || typeof url !== 'string') return false;
+  // Simple regex to validate GitHub repository URLs
+  return /^https?:\/\/github\.com\/[^\/]+\/[^\/]+/.test(url);
+}
 
-// Keywords that suggest a string might be a system prompt
-const PROMPT_KEYWORDS = [
-  'you are', 'assistant', 'your role', 'your task', 'your job',
-  'respond as', 'act as', 'pretend to be', 'behave like',
-  'your purpose is', 'your goal is', 'your objective',
-  'always respond', 'never respond', 'don\'t reveal', 'do not reveal',
-  'instruction', 'guideline', 'do not disclose', 'system prompt',
-  'role play', 'roleplay'
+// Regular expressions for detecting system prompts in code
+const SYSTEM_PROMPT_PATTERNS = [
+  // Direct assignments to variables named like system prompts
+  /(?:const|let|var)\s+(?:SYSTEM_PROMPT|systemPrompt|system_prompt|PROMPT|prompt)\s*=\s*["'`](.+?)["'`]/gs,
+  
+  // OpenAI API calls with system messages
+  /messages\s*=\s*\[\s*\{\s*["']role["']\s*:\s*["']system["']\s*,\s*["']content["']\s*:\s*["'](.+?)["']/gs,
+  /messages\s*:\s*\[\s*\{\s*["']role["']\s*:\s*["']system["']\s*,\s*["']content["']\s*:\s*["'](.+?)["']/gs,
+  
+  // Common pattern with array of messages
+  /\[\s*\{\s*["']role["']\s*:\s*["']system["']\s*,\s*["']content["']\s*:\s*["'](.+?)["']/gs,
+  
+  // Python format with triple quotes
+  /SYSTEM_PROMPT\s*=\s*["']{3}([\s\S]+?)["']{3}/gs,
+  
+  // LangChain system message templates
+  /SystemMessagePromptTemplate\.from_template\(["'`](.+?)["'`]\)/gs,
+  
+  // HuggingFace pipeline with system prompt
+  /pipeline\(\s*[^)]*\s*system_prompt\s*=\s*["'`](.+?)["'`]/gs
 ];
 
-// Check if a string contains prompt-like content
-const isLikelyPrompt = (content: string): boolean => {
-  if (!content || content.length < 20) return false;
-  
-  const lowerContent = content.toLowerCase();
-  return PROMPT_KEYWORDS.some(keyword => lowerContent.includes(keyword.toLowerCase()));
-};
-
-// Extract potential prompts from code using regex
-const extractPromptsFromCode = (code: string, filePath: string): CodeReference[] => {
-  const results: CodeReference[] = [];
-  const lineCount = code.split('\n').length;
-  
-  // Function to process regex matches
-  const processMatches = (regex: RegExp, promptGroupIndex: number) => {
-    let match;
-    while ((match = regex.exec(code)) !== null) {
-      const promptContent = match[promptGroupIndex];
-      
-      // Only consider strings that are likely to be prompts
-      if (isLikelyPrompt(promptContent)) {
-        // Calculate line number by counting newlines before the match
-        const upToMatch = code.substring(0, match.index);
-        const lineNumber = upToMatch.split('\n').length;
-        
-        // Get a snippet with context (up to 3 lines before and after)
-        const startLine = Math.max(0, lineNumber - 3);
-        const endLine = Math.min(lineCount, lineNumber + 3);
-        const snippet = code.split('\n').slice(startLine, endLine).join('\n');
-        
-        results.push({
-          id: `${filePath}-${lineNumber}-${results.length}`,
-          file: filePath,
-          line: lineNumber,
-          snippet: snippet,
-          verified: true
-        });
-      }
-    }
-  };
-  
-  // Process each regex pattern
-  processMatches(PROMPT_PATTERNS.OPENAI_SYSTEM, 2);
-  processMatches(PROMPT_PATTERNS.VARIABLE_ASSIGNMENT, 2);
-  processMatches(PROMPT_PATTERNS.FUNCTION_ARGS, 2);
-  processMatches(PROMPT_PATTERNS.PYTHON_STRINGS, 2);
-  processMatches(PROMPT_PATTERNS.PYTHON_ASSIGNMENT, 2);
-  
-  return results;
-};
-
-// Helper function to determine if a file should be analyzed for prompts
-const shouldAnalyzeFile = (filePath: string): boolean => {
-  const supportedExtensions = ['.py', '.js', '.ts', '.tsx', '.jsx'];
-  const extension = filePath.substring(filePath.lastIndexOf('.'));
-  return supportedExtensions.includes(extension);
-};
-
-// Create a security risk for hardcoded system prompts
-const createSystemPromptRisk = (promptReferences: CodeReference[]): SecurityRisk | null => {
-  if (promptReferences.length === 0) return null;
-  
-  return {
-    risk: "Hardcoded System Prompts",
-    severity: "Medium",
-    description: "Hardcoded system prompts were detected in the codebase. These may leak sensitive information about the application logic or create security vulnerabilities through prompt injection attacks.",
-    related_code_references: promptReferences.map(ref => ref.id),
-    owasp_category: {
-      id: "LLM07:2025",
-      name: "System Prompt Leakage",
-      description: "The exposure of system-level prompts that can reveal internal configurations or logic."
-    }
-  };
-};
-
-// Mock security risks for demonstration purposes
-const getSecurityRisks = (fileContents: Record<string, string>): [SecurityRisk[], CodeReference[]] => {
-  const promptReferences: CodeReference[] = [];
-  
-  // Check each file for hardcoded prompts
-  for (const [filePath, content] of Object.entries(fileContents)) {
-    if (shouldAnalyzeFile(filePath)) {
-      const extractedPrompts = extractPromptsFromCode(content, filePath);
-      promptReferences.push(...extractedPrompts);
-    }
-  }
-  
-  const securityRisks: SecurityRisk[] = [];
-  
-  // Add system prompt risk if found
-  const systemPromptRisk = createSystemPromptRisk(promptReferences);
-  if (systemPromptRisk) {
-    securityRisks.push(systemPromptRisk);
-  }
-  
-  // Add basic set of common security risks
-  securityRisks.push({
-    risk: "Prompt Injection Vulnerability",
-    severity: "High",
-    description: "Direct user input is being passed to LLM prompts without proper validation or sanitization",
-    related_code_references: [],
-    owasp_category: getOWASPCategory("prompt injection")
-  });
-  
-  securityRisks.push({
-    risk: "Data Leakage in LLM Interactions",
-    severity: "Medium",
-    description: "Sensitive information could be exposed through LLM responses due to improper prompt design",
-    related_code_references: [],
-    owasp_category: getOWASPCategory("data leakage")
-  });
-  
-  securityRisks.push({
-    risk: "Hallucination Risk",
-    severity: "Medium",
-    description: "The application doesn't implement proper fact-checking mechanisms to validate LLM output accuracy",
-    related_code_references: [],
-    owasp_category: getOWASPCategory("misinformation")
-  });
-  
-  return [securityRisks, promptReferences];
-};
-
-// Generate mock code references
-const generateCodeReferences = (fileContents: Record<string, string>): CodeReference[] => {
-  const references: CodeReference[] = [];
-  let id = 0;
-  
-  for (const [filePath, content] of Object.entries(fileContents)) {
-    const lines = content.split('\n');
-    
-    // Simple heuristic - look for AI/LLM related keywords
-    const aiKeywords = ['gpt', 'llm', 'openai', 'langchain', 'prompt', 'embedding', 'tokens', 'completion'];
-    
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].toLowerCase();
-      
-      // If line contains any AI keyword
-      if (aiKeywords.some(keyword => line.includes(keyword))) {
-        // Get context - a few lines before and after
-        const startLine = Math.max(0, i - 2);
-        const endLine = Math.min(lines.length, i + 3);
-        const snippet = lines.slice(startLine, endLine).join('\n');
-        
-        references.push({
-          id: `ref-${id++}`,
-          file: filePath,
-          line: i + 1,
-          snippet: snippet,
-          verified: Math.random() > 0.2 // 80% are verified
-        });
-      }
-    }
-  }
-  
-  return references;
-};
-
-// Identify AI components from file analysis
-const identifyAIComponents = (fileContents: Record<string, string>): AIComponent[] => {
-  const components: AIComponent[] = [];
-  
-  // Look for common AI libraries and services
-  const patterns = {
-    openai: /openai|gpt/i,
-    langchain: /langchain/i,
-    huggingface: /huggingface|hf/i,
-    vectordb: /pinecone|chroma|weaviate|qdrant|milvus/i,
-    embedding: /embedding|vector|ada|text-embedding/i,
-    rag: /retrieval|document|knowledge/i
-  };
-  
-  for (const [filePath, content] of Object.entries(fileContents)) {
-    if (patterns.openai.test(content)) {
-      components.push({
-        name: "OpenAI Integration",
-        type: "LLM Provider",
-        confidence: 0.9
-      });
-    }
-    
-    if (patterns.langchain.test(content)) {
-      components.push({
-        name: "LangChain Framework",
-        type: "LLM Framework",
-        confidence: 0.85
-      });
-    }
-    
-    if (patterns.vectordb.test(content)) {
-      // Determine which vector DB
-      let dbName = "Vector Database";
-      if (/pinecone/i.test(content)) dbName = "Pinecone";
-      else if (/chroma/i.test(content)) dbName = "ChromaDB";
-      else if (/weaviate/i.test(content)) dbName = "Weaviate";
-      else if (/qdrant/i.test(content)) dbName = "Qdrant";
-      else if (/milvus/i.test(content)) dbName = "Milvus";
-      
-      components.push({
-        name: dbName,
-        type: "Vector Database",
-        confidence: 0.8
-      });
-    }
-    
-    if (patterns.embedding.test(content)) {
-      components.push({
-        name: "Text Embedding Model",
-        type: "Embedding Model",
-        confidence: 0.75
-      });
-    }
-    
-    if (patterns.rag.test(content) && patterns.vectordb.test(content)) {
-      components.push({
-        name: "RAG Implementation",
-        type: "RAG Framework",
-        confidence: 0.7
-      });
-    }
-  }
-  
-  // Remove duplicates
-  const uniqueComponents = components.filter(
-    (comp, index, self) =>
-      index === self.findIndex((c) => c.name === comp.name)
-  );
-  
-  return uniqueComponents;
-};
-
-// Extract multiple file contents from a GitHub repository
-async function extractRepoFiles(
-  repoUrl: string,
-  branch = "main"
-): Promise<Record<string, string>> {
-  try {
-    console.log(`Extracting files from ${repoUrl}, branch: ${branch}`);
-    
-    // Parse GitHub URL to get owner and repo name
-    const urlParts = repoUrl.split("/");
-    const owner = urlParts[urlParts.length - 2];
-    const repo = urlParts[urlParts.length - 1];
-    
-    console.log(`Owner: ${owner}, Repo: ${repo}`);
-    
-    // Get repository structure
-    const treeUrl = `https://api.github.com/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`;
-    const treeResponse = await fetch(treeUrl);
-    
-    if (!treeResponse.ok) {
-      console.error(`Error fetching repo tree: ${treeResponse.statusText}`);
-      throw new Error(`Failed to fetch repository tree: ${treeResponse.statusText}`);
-    }
-    
-    const treeData = await treeResponse.json();
-    
-    const fileContents: Record<string, string> = {};
-    const promises: Promise<void>[] = [];
-    
-    // Filter to only include relevant files
-    const relevantFiles = treeData.tree.filter((item: any) => {
-      if (item.type !== "blob") return false;
-      
-      const path = item.path;
-      const extensions = [".py", ".js", ".jsx", ".ts", ".tsx", ".html", ".md", ".json"];
-      
-      return extensions.some(ext => path.endsWith(ext));
-    });
-    
-    // Limit to 100 files to avoid rate limiting
-    const filesToProcess = relevantFiles.slice(0, 100);
-    
-    // Fetch file contents in parallel
-    for (const file of filesToProcess) {
-      const promise = (async () => {
-        try {
-          const fileUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${file.path}`;
-          const fileResponse = await fetch(fileUrl);
-          
-          if (fileResponse.ok) {
-            const content = await fileResponse.text();
-            fileContents[file.path] = content;
-          }
-        } catch (error) {
-          console.error(`Error fetching file ${file.path}:`, error);
-        }
-      })();
-      
-      promises.push(promise);
-    }
-    
-    await Promise.all(promises);
-    console.log(`Extracted ${Object.keys(fileContents).length} files`);
-    
-    return fileContents;
-  } catch (error) {
-    console.error("Error extracting repository files:", error);
-    throw error;
-  }
-}
-
-// Function to get structured LLM-related info from code
-const extractLLMRelatedInfo = (content: string): Record<string, string[]> => {
-  const info: Record<string, string[]> = {
-    models: [],
-    providers: [],
-    libraries: []
-  };
-  
-  // Models
-  const modelPatterns = [
-    /gpt-3\.5/g, /gpt-4/g, /davinci/g, /claude/g,
-    /llama/g, /mistral/g, /gemini/g, /palm/g, /text-embedding/g
-  ];
-  
-  // Providers
-  const providerPatterns = [
-    /openai/gi, /anthropic/gi, /cohere/gi, /google/gi,
-    /huggingface/gi, /replicate/gi, /stability/gi
-  ];
-  
-  // Libraries
-  const libraryPatterns = [
-    /langchain/gi, /llamaindex/gi, /transformers/gi,
-    /tiktoken/gi, /tokenizers/gi, /diffusers/gi,
-    /faiss/gi, /sentence-transformers/gi
-  ];
-  
-  // Extract models
-  modelPatterns.forEach(pattern => {
-    const matches = content.match(pattern);
-    if (matches) {
-      matches.forEach(match => {
-        if (!info.models.includes(match)) {
-          info.models.push(match);
-        }
-      });
-    }
-  });
-  
-  // Extract providers
-  providerPatterns.forEach(pattern => {
-    const matches = content.match(pattern);
-    if (matches) {
-      matches.forEach(match => {
-        if (!info.providers.includes(match)) {
-          info.providers.push(match);
-        }
-      });
-    }
-  });
-  
-  // Extract libraries
-  libraryPatterns.forEach(pattern => {
-    const matches = content.match(pattern);
-    if (matches) {
-      matches.forEach(match => {
-        if (!info.libraries.includes(match)) {
-          info.libraries.push(match);
-        }
-      });
-    }
-  });
-  
-  return info;
-};
-
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-};
-
+// Main function to analyze GitHub repositories
 serve(async (req) => {
-  // Handle CORS preflight request
-  if (req.method === "OPTIONS") {
+  // Handle CORS preflight requests
+  if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }
-  
+
   try {
-    const { repository_url, branch = "main" } = (await req.json()) as RepositoryAnalysisRequest;
+    // Parse the request body
+    const requestData = await req.json();
     
-    if (!repository_url) {
+    // Validate repository URL
+    const { repositoryUrl, apiKey, options, debugMode } = requestData;
+    
+    console.log(`Processing repository: ${repositoryUrl}\n`);
+    
+    if (!repositoryUrl) {
       throw new Error("Repository URL is required");
     }
     
-    console.log(`Analyzing repository: ${repository_url}`);
+    if (!isValidGitHubUrl(repositoryUrl)) {
+      throw new Error("Invalid GitHub repository URL format");
+    }
+
+    if (!apiKey) {
+      throw new Error("OpenAI API key is required");
+    }
     
-    // Extract files from the repository
-    const fileContents = await extractRepoFiles(repository_url, branch);
+    // Construct the GitHub API URL for the repository
+    const repoUrlParts = repositoryUrl.replace(/\/$/, '').split('/');
+    const owner = repoUrlParts[repoUrlParts.length - 2];
+    const repo = repoUrlParts[repoUrlParts.length - 1];
     
-    // Get code references, security risks, and AI components
-    const codeReferences = generateCodeReferences(fileContents);
-    const [securityRisks, promptReferences] = getSecurityRisks(fileContents);
-    const aiComponents = identifyAIComponents(fileContents);
+    // Repository API URL
+    const githubApiUrl = `https://api.github.com/repos/${owner}/${repo}`;
     
-    // Add any prompt references to code references if they're not already there
-    for (const promptRef of promptReferences) {
-      if (!codeReferences.some(ref => ref.id === promptRef.id)) {
-        codeReferences.push(promptRef);
+    // Start collecting debug information
+    const debugInfo = debugMode ? {
+      owner,
+      repo,
+      api_url: githubApiUrl,
+      analysis_timestamps: {},
+      rate_limit_info: null,
+      file_count: 0,
+      extensions_found: {},
+      ai_libraries_found: [],
+      errors: [],
+    } : null;
+    
+    // Fetch repository metadata
+    const repoResponse = await fetch(githubApiUrl, {
+      headers: {
+        'Accept': 'application/vnd.github.v3+json',
+        'User-Agent': 'RiskRover-Analysis-Tool',
+      }
+    });
+    
+    if (!repoResponse.ok) {
+      if (repoResponse.status === 404) {
+        throw new Error("Repository not found. It may be private or doesn't exist.");
+      } else if (repoResponse.status === 403) {
+        const resetTime = repoResponse.headers.get('X-RateLimit-Reset');
+        const resetDate = resetTime ? new Date(parseInt(resetTime) * 1000).toLocaleString() : 'unknown time';
+        throw new Error(`GitHub API rate limit exceeded. Resets at ${resetDate}`);
+      } else {
+        throw new Error(`GitHub API error: ${repoResponse.status} ${repoResponse.statusText}`);
       }
     }
     
-    // Calculate confidence score based on findings
-    const aiComponentsWeight = 0.5;
-    const securityRisksWeight = 0.3;
-    const codeReferencesWeight = 0.2;
+    const repoData = await repoResponse.json();
     
-    const normalizedAIComponentScore = Math.min(aiComponents.length / 5, 1.0);
-    const normalizedSecurityRiskScore = Math.min(securityRisks.length / 6, 1.0);
-    const normalizedCodeReferencesScore = Math.min(codeReferences.length / 20, 1.0);
+    if (debugInfo) {
+      debugInfo.repo_info = {
+        name: repoData.name,
+        description: repoData.description,
+        default_branch: repoData.default_branch,
+        stars: repoData.stargazers_count,
+        forks: repoData.forks_count,
+        size: repoData.size,
+        created_at: repoData.created_at,
+        updated_at: repoData.updated_at,
+      };
+      debugInfo.analysis_timestamps.start = new Date().toISOString();
+    }
     
-    const confidenceScore = (
-      normalizedAIComponentScore * aiComponentsWeight +
-      normalizedSecurityRiskScore * securityRisksWeight +
-      normalizedCodeReferencesScore * codeReferencesWeight
+    // Get repository contents recursively
+    const allFiles = await fetchAllRepoContents(owner, repo, repoData.default_branch);
+    
+    if (debugInfo) {
+      debugInfo.file_count = allFiles.length;
+      // Count file extensions
+      allFiles.forEach(file => {
+        const extension = file.name.split('.').pop() || 'no-extension';
+        debugInfo.extensions_found[extension] = (debugInfo.extensions_found[extension] || 0) + 1;
+      });
+    }
+    
+    // Start collecting repository data
+    const codeFiles = allFiles.filter(file => 
+      file.type === 'file' && 
+      !file.path.includes('node_modules/') && 
+      !file.path.includes('venv/') &&
+      !file.path.includes('.git/')
     );
     
-    // Generate remediation suggestions based on findings
-    const remediationSuggestions = [
-      "Implement input validation for all user inputs that affect LLM prompts",
-      "Use parameterized prompts instead of string concatenation",
-      "Store system prompts in a secure environment outside of code",
-      "Implement rate limiting for LLM API calls",
-      "Use a content filtering system to validate LLM outputs",
-      "Implement a robust logging system for all LLM interactions"
-    ];
+    // Analyze code files content (batch processing to avoid rate limits)
+    const codeReferences = [];
+    const batchSize = 5;
     
-    // Construct the final report
-    const report = {
-      ai_components_detected: aiComponents,
-      security_risks: securityRisks,
-      code_references: codeReferences,
-      confidence_score: Math.min(Math.max(confidenceScore, 0.1), 0.95),
-      remediation_suggestions: remediationSuggestions
+    for (let i = 0; i < codeFiles.length; i += batchSize) {
+      const batch = codeFiles.slice(i, i + batchSize);
+      const batchPromises = batch.map(async (file) => {
+        try {
+          // Download file content
+          const fileUrl = file.download_url;
+          if (!fileUrl) return null; // Skip if no download URL
+            
+          const fileResponse = await fetch(fileUrl, {
+            headers: {
+              'Accept': 'application/vnd.github.v3.raw',
+              'User-Agent': 'RiskRover-Analysis-Tool',
+            }
+          });
+            
+          if (!fileResponse.ok) {
+            if (debugInfo) {
+              debugInfo.errors.push(`Failed to fetch ${file.path}: ${fileResponse.status}`);
+            }
+            return null;
+          }
+            
+          const content = await fileResponse.text();
+          
+          // Process the file content for both AI libraries and system prompts
+          const fileReferences = [];
+  
+          // Check for system prompts in the content
+          let promptMatches = findSystemPrompts(content, file.path);
+          if (promptMatches.length > 0) {
+            fileReferences.push(...promptMatches);
+          }
+  
+          // Only return if we have references
+          if (fileReferences.length > 0) {
+            return {
+              file: file.path,
+              content: content.length > 500 ? content.substring(0, 500) + '...' : content,
+              references: fileReferences
+            };
+          }
+          
+          // If no matching patterns, return basic file info for further analysis
+          return {
+            file: file.path,
+            content: content.length > 500 ? content.substring(0, 500) + '...' : content,
+            references: []
+          };
+  
+        } catch (error) {
+          if (debugInfo) {
+            debugInfo.errors.push(`Error processing ${file.path}: ${error.message}`);
+          }
+          console.error(`Error processing ${file.path}:`, error);
+          return null;
+        }
+      });
+        
+      const batchResults = await Promise.all(batchPromises);
+      codeReferences.push(...batchResults.filter(Boolean));
+        
+      // Slight delay to avoid hitting rate limits
+      if (i + batchSize < codeFiles.length) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
+    
+    // Extract file content to analyze through OpenAI
+    const filesToAnalyze = codeReferences.map(ref => ({
+      file: ref.file,
+      content: ref.content,
+      references: ref.references
+    }));
+    
+    let analysis;
+    try {
+      if (debugInfo) {
+        debugInfo.analysis_timestamps.openai_start = new Date().toISOString();
+      }
+      
+      // Prepare system prompt with user's custom additions if provided
+      const systemPromptBase = options?.systemPrompt || 
+        `Analyze the GitHub repository and provide insights about AI components and security risks.`;
+      
+      // Generate repository analysis with OpenAI
+      analysis = await analyzeRepositoryWithOpenAI(
+        apiKey, 
+        {
+          repositoryUrl, 
+          repoInfo: repoData, 
+          files: filesToAnalyze
+        },
+        systemPromptBase
+      );
+      
+      if (debugInfo) {
+        debugInfo.analysis_timestamps.openai_end = new Date().toISOString();
+      }
+    } catch (error) {
+      console.error("OpenAI analysis error:", error);
+      
+      if (debugInfo) {
+        debugInfo.errors.push(`OpenAI analysis failed: ${error.message}`);
+      }
+      
+      throw new Error(`Analysis failed: ${error.message}`);
+    }
+    
+    // Combine analysis with code references
+    const result = {
+      repository_url: repositoryUrl,
+      repository_info: {
+        name: repoData.name,
+        description: repoData.description,
+        stars: repoData.stargazers_count,
+        forks: repoData.forks_count,
+      },
+      ...analysis
     };
     
-    console.log(`Analysis complete. Found ${aiComponents.length} AI components, ${securityRisks.length} security risks, and ${codeReferences.length} code references.`);
-    
-    return new Response(JSON.stringify(report), {
-      headers: {
-        ...corsHeaders,
-        "Content-Type": "application/json",
-      },
-    });
-  } catch (error) {
-    console.error("Error analyzing repository:", error);
+    // Add debug information if requested
+    if (debugInfo) {
+      debugInfo.analysis_timestamps.end = new Date().toISOString();
+      result.debug = debugInfo;
+    }
     
     return new Response(
-      JSON.stringify({
-        error: error instanceof Error ? error.message : "Unknown error occurred",
+      JSON.stringify(result),
+      { 
+        headers: {
+          'Content-Type': 'application/json',
+          ...corsHeaders
+        } 
+      }
+    );
+  } catch (error) {
+    console.error(`Error analyzing repository:`, error);
+    
+    return new Response(
+      JSON.stringify({ 
+        error: error.message || "Unknown error occurred"
       }),
-      {
+      { 
         status: 500,
         headers: {
-          ...corsHeaders,
-          "Content-Type": "application/json",
-        },
+          'Content-Type': 'application/json',
+          ...corsHeaders
+        } 
       }
     );
   }
 });
+
+// Helper function to find system prompts in code content
+function findSystemPrompts(content, filePath) {
+  const matches = [];
+  
+  // Apply all regex patterns to find potential system prompts
+  for (const pattern of SYSTEM_PROMPT_PATTERNS) {
+    let match;
+    while ((match = pattern.exec(content)) !== null) {
+      if (match[1] && match[1].length > 10) { // Only consider non-trivial prompts
+        // Extract a snippet of code around the match for context
+        const startPos = Math.max(0, match.index - 50);
+        const endPos = Math.min(content.length, match.index + match[0].length + 50);
+        const contextCode = content.substring(startPos, endPos);
+        
+        matches.push({
+          type: "system_prompt",
+          pattern_matched: pattern.toString().replace(/^\/|\/gs$/g, ''),
+          prompt_content: match[1].substring(0, 100) + (match[1].length > 100 ? '...' : ''),
+          code_snippet: contextCode,
+          file: filePath,
+          verified: true
+        });
+      }
+    }
+  }
+  
+  return matches;
+}
+
+// Function to fetch all repository content recursively
+async function fetchAllRepoContents(owner, repo, branch = 'main', path = '') {
+  const apiUrl = path
+    ? `https://api.github.com/repos/${owner}/${repo}/contents/${path}?ref=${branch}`
+    : `https://api.github.com/repos/${owner}/${repo}/contents?ref=${branch}`;
+  
+  try {
+    const response = await fetch(apiUrl, {
+      headers: {
+        'Accept': 'application/vnd.github.v3+json',
+        'User-Agent': 'RiskRover-Analysis-Tool',
+      }
+    });
+    
+    if (!response.ok) {
+      console.error(`Error fetching repo contents for ${path || 'root'}: ${response.status}`);
+      return [];
+    }
+    
+    const contents = await response.json();
+    
+    // If single file was returned (not array), wrap in array
+    const items = Array.isArray(contents) ? contents : [contents];
+    
+    let allContents = [...items];
+    
+    // Recursively process directories
+    for (const item of items) {
+      if (item.type === 'dir') {
+        const subContents = await fetchAllRepoContents(owner, repo, branch, item.path);
+        allContents = [...allContents, ...subContents];
+      }
+    }
+    
+    return allContents;
+  } catch (error) {
+    console.error(`Error fetching repo contents for ${path || 'root'}:`, error);
+    return [];
+  }
+}
+
+// Function to analyze repository with OpenAI
+async function analyzeRepositoryWithOpenAI(apiKey, repository, systemPrompt) {
+  // Prepare repository data for analysis
+  const { repositoryUrl, repoInfo, files } = repository;
+  
+  // Structured summary of the repository
+  const repoSummary = `
+    Repository: ${repositoryUrl}
+    Name: ${repoInfo.name}
+    Description: ${repoInfo.description || 'No description provided'}
+    Stars: ${repoInfo.stargazers_count}
+    Forks: ${repoInfo.forks_count}
+    
+    Files to analyze (${files.length} files):
+    ${files.map(f => `- ${f.file}`).join('\n')}
+    
+    Code references detected in preliminary scan:
+    ${files.filter(f => f.references.length > 0)
+      .map(f => `- ${f.file}: ${f.references.length} references found`)
+      .join('\n')}
+  `;
+  
+  // Format file content for analysis
+  const filesContent = files.map(file => {
+    // If the file already has references from our preliminary scan (e.g., system prompts)
+    // add them as metadata
+    let referenceInfo = '';
+    if (file.references && file.references.length > 0) {
+      referenceInfo = '\nPreliminary scan found the following references:\n' + 
+        file.references.map(ref => 
+          `- Type: ${ref.type}\n  Content: ${ref.prompt_content || ref.content || 'N/A'}`
+        ).join('\n');
+    }
+    
+    return `
+      File: ${file.file}${referenceInfo}
+      Content:
+      \`\`\`
+      ${file.content}
+      \`\`\`
+    `;
+  }).join('\n\n---\n\n');
+  
+  // Combine all data for analysis
+  const analysisPrompt = `
+    ${repoSummary}
+    
+    Detailed file contents:
+    ${filesContent}
+  `;
+  
+  // Structure for AI components detection
+  const aiComponentsStructure = `
+    Please structure your response as a JSON object with the following format:
+    {
+      "confidence_score": number between 0-100 representing confidence in analysis,
+      "ai_components_detected": [
+        {
+          "component_type": "string (e.g., 'LLM Integration', 'Vector Database', 'Embedding Generation')",
+          "component_name": "string (e.g., 'OpenAI', 'LangChain', 'FAISS')",
+          "description": "string explaining the component",
+          "risk_level": "string (Low, Medium, High)",
+          "files": ["array of file paths where component is used"]
+        }
+      ],
+      "security_risks": [
+        {
+          "risk_type": "string (e.g., 'API Key Leakage', 'System Prompt Leakage')",
+          "description": "string explaining the risk",
+          "severity": "string (Low, Medium, High, Critical)",
+          "location": "string (file path or general)",
+          "recommendation": "string with remediation advice"
+        }
+      ],
+      "code_references": [
+        {
+          "file": "string (file path)",
+          "content": "string (relevant code snippet)",
+          "description": "string explaining what was found",
+          "verified": boolean (whether this reference was actually confirmed in the code)
+        }
+      ],
+      "remediation_suggestions": [
+        "string with specific remediation advice"
+      ]
+    }
+  `;
+  
+  // Call OpenAI API for analysis
+  const openaiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model: "gpt-4",
+      messages: [
+        {
+          role: "system",
+          content: `${systemPrompt}
+          
+          You are performing a security and AI component analysis of a GitHub repository.
+          ${aiComponentsStructure}`
+        },
+        {
+          role: "user",
+          content: analysisPrompt
+        }
+      ],
+      temperature: 0.1,
+    })
+  });
+  
+  if (!openaiResponse.ok) {
+    const errorData = await openaiResponse.json();
+    throw new Error(`OpenAI API error: ${errorData.error?.message || openaiResponse.statusText}`);
+  }
+  
+  const response = await openaiResponse.json();
+  
+  try {
+    // Extract and parse the JSON from the response
+    const content = response.choices[0].message.content;
+    
+    // Find JSON content (sometimes OpenAI wraps it in markdown code blocks)
+    let jsonMatch = content.match(/```json\n([\s\S]*?)\n```/) || 
+                    content.match(/```\n([\s\S]*?)\n```/) ||
+                    [null, content];
+    
+    const jsonContent = jsonMatch[1] || content;
+    const parsedResult = JSON.parse(jsonContent);
+    
+    // Add hardcoded system prompt findings from our preliminary scan to the security risks
+    const systemPromptFindings = files
+      .flatMap(file => file.references)
+      .filter(ref => ref.type === "system_prompt");
+    
+    if (systemPromptFindings.length > 0 && !parsedResult.security_risks.some(risk => risk.risk_type === "System Prompt Leakage")) {
+      parsedResult.security_risks.push({
+        risk_type: "System Prompt Leakage",
+        description: "Hardcoded system prompts found in the codebase. These can leak information about your AI system's behavior and potentially be manipulated.",
+        severity: "High",
+        location: systemPromptFindings.map(f => f.file).join(", "),
+        recommendation: "Move system prompts to environment variables or configuration files that are not committed to the repository."
+      });
+      
+      // Also add these to code references
+      systemPromptFindings.forEach(finding => {
+        if (!parsedResult.code_references.some(ref => ref.file === finding.file && ref.content === finding.code_snippet)) {
+          parsedResult.code_references.push({
+            file: finding.file,
+            content: finding.code_snippet,
+            description: "Contains hardcoded system prompt: " + finding.prompt_content,
+            verified: true
+          });
+        }
+      });
+    }
+    
+    return parsedResult;
+  } catch (error) {
+    console.error("Error parsing OpenAI response:", error);
+    console.error("Response content:", response.choices[0].message.content);
+    throw new Error("Failed to parse analysis results from OpenAI");
+  }
+}
