@@ -92,7 +92,7 @@ type AnalysisResult = {
   debug?: any;
 };
 
-// Initialize arrays with explicit types
+// Initialize arrays with explicit types at declaration
 const contextBuffer = [] as string[];
 const codeReferences = [] as CodeReference[];
 const recommendations = [] as string[];
@@ -206,6 +206,15 @@ serve(async (req) => {
       );
     }
 
+    // Scan and log files being processed
+    const scanResults = scanRepositoryFiles(repositoryContent);
+    console.log('Files scanned:', scanResults.scanned);
+    console.log('Files skipped:', scanResults.skipped);
+    
+    if (scanResults.scanned.length === 0) {
+      console.warn('No valid files found to scan in repository');
+    }
+
     // Debug mode - include repository content in response if requested
     const debugMode = options.debugMode || false;
     let debugInfo = null;
@@ -302,7 +311,7 @@ function postProcessAnalysisResults(analysisResult, repositoryContent) {
   
   // Find possible code references from the repository content and link them to risks
   if (result.code_references.length === 0) {
-    result.code_references = findPotentialCodeReferences(repositoryContent, result.ai_components_detected);
+    result.code_references = findPotentialCodeReferences(repositoryContent);
   }
 
   // Enhanced linking of code references to risks - maintain existing structure
@@ -543,24 +552,31 @@ function enhanceRisksWithOwaspCategories(securityRisks) {
 }
 
 // Function to find potential code references in repository
-function findPotentialCodeReferences(repositoryContent, aiComponents) {
-  const codeReferences = [];
-  let refId = 1;
-  
-  // Get list of AI component names to search for
-  const componentKeywords = aiComponents.map(comp => comp.name?.toLowerCase()).filter(Boolean);
-  
-  // Scan through repository files
-  for (const file of repositoryContent.files) {
-    // Skip binary or extremely large files
-    if (!file.content || file.content.length > 100000) continue;
-    
-    // Focus on code files
-    const codeExtensions = ['.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.go', '.php', '.rb'];
-    const isCodeFile = codeExtensions.some(ext => file.path.endsWith(ext));
-    
-    if (!isCodeFile) continue;
+function findPotentialCodeReferences(repositoryContent: RepositoryContent) {
+  const codeReferences = [] as CodeReference[];
+  console.log('Starting code reference scan...');
 
+  for (const file of repositoryContent.files) {
+    // Log file being processed
+    console.log(`Processing file: ${file.path}`);
+
+    // Skip binary or extremely large files
+    if (!file.content || file.content.length > 100000) {
+      console.log(`Skipping file (empty/large): ${file.path}`);
+      continue;
+    }
+
+    // Focus on code files
+    const ext = file.path.toLowerCase().substring(file.path.lastIndexOf('.'));
+    const isCodeFile = ['.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.go', '.php', '.rb']
+      .includes(ext);
+
+    if (!isCodeFile) {
+      console.log(`Skipping non-code file: ${file.path}`);
+      continue;
+    }
+
+    console.log(`Scanning file: ${file.path}`);
     const lines = file.content.split('\n');
     let contextBuffer = []; // Store previous lines for context
     
@@ -574,7 +590,7 @@ function findPotentialCodeReferences(repositoryContent, aiComponents) {
       
       // Check for actual AI component usage (not just imports)
       const hasModelInvocation = aiPatterns.modelInvocation.some(pattern => pattern.test(line));
-      const hasVectorOperation = aiPatterns.vectorOperations.some(pattern => pattern.test(line));
+      const hasVectorOperation = aiPatterns.vectorOperations.some(pattern => pattern.test(pattern));
       const hasEmbeddingGeneration = aiPatterns.embeddingGeneration.some(pattern => pattern.test(line));
       const hasPromptDefinition = aiPatterns.promptDefinition.some(pattern => pattern.test(line));
       const hasModelConfig = aiPatterns.modelConfig.some(pattern => pattern.test(line));
@@ -1765,4 +1781,49 @@ function detectScope(lines: string[], currentLine: number): string | undefined {
     }
   }
   return undefined;
+}
+
+// Add debug logging for file scanning
+function scanRepositoryFiles(repositoryContent: RepositoryContent) {
+  const scannedFiles = new Set<string>();
+  const skippedFiles = new Set<string>();
+
+  for (const file of repositoryContent.files) {
+    const filePath = file.path.toLowerCase();
+    
+    // Log all files found
+    console.log(`Checking file: ${file.path}`);
+
+    // Skip binary or extremely large files, but log them
+    if (!file.content) {
+      console.log(`Skipping empty file: ${file.path}`);
+      skippedFiles.add(file.path);
+      continue;
+    }
+
+    if (file.content.length > 100000) {
+      console.log(`Skipping large file: ${file.path} (${file.content.length} bytes)`);
+      skippedFiles.add(file.path);
+      continue;
+    }
+
+    // Check file extensions case-insensitively
+    const ext = filePath.substring(filePath.lastIndexOf('.'));
+    const isCodeFile = ['.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.go', '.php', '.rb']
+      .includes(ext);
+
+    if (!isCodeFile) {
+      console.log(`Skipping non-code file: ${file.path}`);
+      skippedFiles.add(file.path);
+      continue;
+    }
+
+    scannedFiles.add(file.path);
+    console.log(`Scanning file: ${file.path}`);
+  }
+
+  return {
+    scanned: Array.from(scannedFiles),
+    skipped: Array.from(skippedFiles)
+  };
 }
