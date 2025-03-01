@@ -92,15 +92,15 @@ type AnalysisResult = {
   debug?: any;
 };
 
-// Initialize arrays with explicit types at declaration
-const contextBuffer = [] as string[];
-const codeReferences = [] as CodeReference[];
-const recommendations = [] as string[];
-const foundComponents = [] as AIComponent[];
-const finalFiles = [] as RepositoryFile[];
-const filePromises = [] as Promise<RepositoryFile | null>[];
-const risks = [] as SecurityRisk[];
-const uniqueComponents = [] as AIComponent[];
+// Initialize arrays with proper types
+const contextBuffer: string[] = [];
+const codeReferences: CodeReference[] = [];
+const recommendations: string[] = [];
+const foundComponents: AIComponent[] = [];
+const finalFiles: RepositoryFile[] = [];
+const filePromises: Promise<RepositoryFile | null>[] = [];
+const risks: SecurityRisk[] = [];
+const uniqueComponents: AIComponent[] = [];
 
 // Add reference deduplication
 const seenReferences = new Set<string>();
@@ -963,137 +963,73 @@ function extractComponentsFromRepository(repositoryContent) {
 }
 
 // Function to find code references using pattern matching
-function findCodeReferences(files, aiComponents) {
-  const codeReferences = [];
+function findCodeReferences(files: RepositoryFile[], aiComponents: AIComponent[]) {
+  const codeReferences: CodeReference[] = [];
   let refId = 1;
-  
-  // Get names of AI components to search for
-  const componentNames = aiComponents.map(comp => comp.name.toLowerCase());
-  
+
   files.forEach(file => {
-    // Focus on Python, JavaScript, and other code files
-    if (!['.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.go', '.php', '.rb'].includes(file.extension)) {
-      return;
-    }
-    
     const lines = file.content.split('\n');
-    
+    let importedComponents = new Set<string>();
+
+    // First pass - find imports
     lines.forEach((line, lineIndex) => {
-      const lineNumber = lineIndex + 1;
+      const lowerLine = line.toLowerCase();
       
-      // Check for imports or usage of AI components
-      for (const componentName of componentNames) {
-        const lowerLine = line.toLowerCase();
-        
-        // Python-style imports
-        if (file.extension === '.py' && 
-            (lowerLine.includes(`import ${componentName}`) || 
-             lowerLine.includes(`from ${componentName}`) ||
-             lowerLine.match(new RegExp(`${componentName}\\.\\w+`)))) {
-          
+      // Check for imports of known AI components
+      for (const comp of aiComponents) {
+        const componentName = comp.name.toLowerCase();
+        if (lowerLine.includes(`import ${componentName}`) || 
+            lowerLine.includes(`from ${componentName}`)) {
+          importedComponents.add(componentName);
           addCodeReference(codeReferences, {
             id: `ref_${refId++}`,
             file: file.path,
-            line: lineNumber,
+            line: lineIndex + 1,
             snippet: line.trim(),
             context: {
-              before: [],
-              after: [],
-              scope: detectScope(lines, lineNumber)
+              before: lines.slice(Math.max(0, lineIndex - 2), lineIndex),
+              after: lines.slice(lineIndex + 1, lineIndex + 3),
+              scope: detectScope(lines, lineIndex)
             },
             type: 'model_invocation',
             confidence: 0.9,
             verified: true
           });
         }
-        
-        // JavaScript/TypeScript imports
-        if (['.js', '.ts', '.jsx', '.tsx'].includes(file.extension) &&
-            (lowerLine.includes(`import`) && lowerLine.includes(componentName) ||
-             lowerLine.includes(`require`) && lowerLine.includes(componentName))) {
-          
-          addCodeReference(codeReferences, {
-            id: `ref_${refId++}`,
-            file: file.path,
-            line: lineNumber,
-            snippet: line.trim(),
-            context: {
-              before: [],
-              after: [],
-              scope: detectScope(lines, lineNumber)
-            },
-            type: 'model_invocation',
-            confidence: 0.9,
-            verified: true
-          });
-        }
-        
-        // Java imports
-        if (file.extension === '.java' &&
-            lowerLine.includes(`import`) && lowerLine.includes(componentName)) {
-          
-          addCodeReference(codeReferences, {
-            id: `ref_${refId++}`,
-            file: file.path,
-            line: lineNumber,
-            snippet: line.trim(),
-            context: {
-              before: [],
-              after: [],
-              scope: detectScope(lines, lineNumber)
-            },
-            type: 'model_invocation',
-            confidence: 0.9,
-            verified: true
-          });
-        }
-      }
-      
-      // Look for API keys and credentials
-      if (line.match(/api[_-]?key|secret|password|credential|token/i) && 
-          line.match(/=|\:|const|let|var/) &&
-          !line.match(/process\.env|os\.environ|getenv|System\.getenv/)) {
-        
-        addCodeReference(codeReferences, {
-          id: `ref_${refId++}`,
-          file: file.path,
-          line: lineNumber,
-          snippet: line.trim(),
-          context: {
-            before: [],
-            after: [],
-            scope: detectScope(lines, lineNumber)
-          },
-          type: 'credential_exposure',
-          confidence: 0.95,
-          verified: true,
-          securityRisk: true
-        });
-      }
-      
-      // Look for LLM-related code (prompts, completion calls, etc.)
-      if (line.match(/prompt|completion|chat|llm|gpt|generate|token/i) && 
-          (line.match(/openai/i) || line.match(/anthropic/i) || line.match(/generate_text/i) || line.match(/llm\./i))) {
-        
-        addCodeReference(codeReferences, {
-          id: `ref_${refId++}`,
-          file: file.path,
-          line: lineNumber,
-          snippet: line.trim(),
-          context: {
-            before: [],
-            after: [],
-            scope: detectScope(lines, lineNumber)
-          },
-          type: 'model_invocation',
-          confidence: 0.9,
-          verified: true,
-          llmUsage: true
-        });
       }
     });
+
+    // Second pass - find usage of imported components
+    if (importedComponents.size > 0) {
+      lines.forEach((line, lineIndex) => {
+        const lowerLine = line.toLowerCase();
+        
+        for (const component of importedComponents) {
+          if (lowerLine.includes(component) && 
+              !lowerLine.includes('import') && 
+              !lowerLine.startsWith('//') && 
+              !lowerLine.startsWith('#')) {
+            
+            addCodeReference(codeReferences, {
+              id: `ref_${refId++}`,
+              file: file.path,
+              line: lineIndex + 1,
+              snippet: line.trim(),
+              context: {
+                before: lines.slice(Math.max(0, lineIndex - 2), lineIndex),
+                after: lines.slice(lineIndex + 1, lineIndex + 3),
+                scope: detectScope(lines, lineIndex)
+              },
+              type: 'model_invocation',
+              confidence: 0.95,
+              verified: true
+            });
+          }
+        }
+      });
+    }
   });
-  
+
   return codeReferences;
 }
 
@@ -1857,4 +1793,47 @@ function isValidAIContext(line: string, context: string[]): boolean {
   }
 
   return true;
+}
+
+function analyzeCodeReferences(references: CodeReference[]): SecurityRisk[] {
+  const risks: SecurityRisk[] = [];
+  
+  // Group references by type
+  const modelUsage = references.filter(ref => 
+    ref.type === 'model_invocation' || 
+    ref.snippet.match(/(ChatOpenAI|GPT|LLM|Completion)/i)
+  );
+  
+  const configRefs = references.filter(ref => 
+    ref.type === 'model_config' ||
+    ref.snippet.match(/(temperature|top_p|frequency_penalty)/i)
+  );
+  
+  const ragRefs = references.filter(ref =>
+    ref.type === 'vector_operation' ||
+    ref.snippet.match(/(pinecone|weaviate|chromadb|embedding)/i)
+  );
+
+  // Only add risks if we have evidence
+  if (modelUsage.length > 0) {
+    risks.push({
+      risk: "Prompt Injection Vulnerability",
+      severity: "High",
+      description: "Direct LLM usage detected without input sanitization",
+      related_code_references: modelUsage.map(ref => ref.id)
+    });
+  }
+
+  if (ragRefs.length > 0) {
+    risks.push({
+      risk: "Data Leakage via LLM",
+      severity: "High", 
+      description: "RAG implementation detected - potential for data leakage",
+      related_code_references: ragRefs.map(ref => ref.id)
+    });
+  }
+
+  // etc...
+  
+  return risks;
 }
