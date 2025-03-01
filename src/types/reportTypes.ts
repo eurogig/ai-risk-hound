@@ -25,6 +25,9 @@ export interface CodeReference {
   file: string;
   line: number;
   snippet: string;
+  context?: string; // Added support for context around the snippet
+  type?: string; // Type of code reference (e.g., credential_exposure, prompt_definition)
+  confidence?: number; // Confidence score for this reference
   verified: boolean;
   relatedRisks?: string[]; // Risk names this reference is related to
 }

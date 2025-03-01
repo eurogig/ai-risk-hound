@@ -1,7 +1,7 @@
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { ShieldAlert } from "lucide-react";
+import { ShieldAlert, AlertTriangle, Info } from "lucide-react";
 import { 
   Accordion, 
   AccordionContent, 
@@ -72,12 +72,34 @@ const SecurityRisksCard = ({
   // Convert map back to array
   const validSecurityRisks = Array.from(processedRisks.values());
   
+  // Group risks by OWASP category for better organization
+  const risksByOwaspCategory = validSecurityRisks.reduce((acc, risk) => {
+    if (risk.owasp_category?.id) {
+      const categoryId = risk.owasp_category.id;
+      if (!acc[categoryId]) {
+        acc[categoryId] = [];
+      }
+      acc[categoryId].push(risk);
+    } else {
+      // Handle risks without OWASP category
+      if (!acc['uncategorized']) {
+        acc['uncategorized'] = [];
+      }
+      acc['uncategorized'].push(risk);
+    }
+    return acc;
+  }, {} as Record<string, SecurityRisk[]>);
+  
   console.log("Valid security risks count after deduplication:", validSecurityRisks.length);
+  console.log("Risks grouped by OWASP category:", Object.keys(risksByOwaspCategory));
   
   return (
     <Card>
       <CardHeader className="pb-2">
-        <CardTitle className="text-xl">Security Risks</CardTitle>
+        <CardTitle className="text-xl flex items-center gap-2">
+          <ShieldAlert className="h-5 w-5 text-red-500" />
+          Security Risks
+        </CardTitle>
       </CardHeader>
       <CardContent>
         {validSecurityRisks.length > 0 ? (
@@ -106,7 +128,7 @@ const SecurityRisksCard = ({
                                   {risk.owasp_category.id}
                                 </Badge>
                               </TooltipTrigger>
-                              <TooltipContent>
+                              <TooltipContent side="left" className="max-w-sm">
                                 <div className="max-w-xs">
                                   <p className="font-bold">{risk.owasp_category.name}</p>
                                   <p className="text-xs">{risk.owasp_category.description}</p>
@@ -163,8 +185,20 @@ const SecurityRisksCard = ({
                             riskIndex={index} 
                           />
                         ) : (
-                          <p className="text-sm text-gray-500 italic">No specific code references found for this risk.</p>
+                          <div className="text-sm text-gray-500 italic flex items-center gap-2 p-2 bg-gray-50 rounded border border-gray-100">
+                            <Info className="h-4 w-4 text-blue-500" />
+                            <p>No specific code references linked to this risk.</p>
+                          </div>
                         )}
+                      </div>
+
+                      {/* Impact Rating */}
+                      <div className="mt-4 p-3 bg-gray-50 rounded-md border border-gray-200">
+                        <h4 className="text-sm font-medium text-gray-700 mb-1">Impact Assessment</h4>
+                        <div className="flex items-center gap-2">
+                          <AlertTriangle className={`h-4 w-4 ${getSeverityIconColor(risk.severity)}`} />
+                          <span className="text-sm font-medium">{getSeverityDescription(risk.severity)}</span>
+                        </div>
                       </div>
                     </div>
                   </AccordionContent>
@@ -177,9 +211,44 @@ const SecurityRisksCard = ({
             No security risks detected in this repository.
           </div>
         )}
+
+        {/* OWASP Reference Note */}
+        <div className="mt-6 p-3 rounded-md bg-blue-50 border border-blue-100">
+          <div className="flex items-start gap-2">
+            <ShieldAlert className="h-4 w-4 text-blue-500 mt-0.5" />
+            <div>
+              <h4 className="text-sm font-medium text-blue-700">About OWASP LLM Top 10</h4>
+              <p className="text-xs text-blue-600 mt-1">
+                Security risks are categorized according to the OWASP LLM Top 10, a standard awareness document for 
+                developers and web application security. It represents a broad consensus about the most critical 
+                security risks to LLM applications.
+              </p>
+            </div>
+          </div>
+        </div>
       </CardContent>
     </Card>
   );
 };
+
+// Helper functions for risk severity
+function getSeverityIconColor(severity: string): string {
+  const lowerSeverity = severity.toLowerCase();
+  if (lowerSeverity === 'high' || lowerSeverity === 'critical') return 'text-red-500';
+  if (lowerSeverity === 'medium') return 'text-amber-500';
+  if (lowerSeverity === 'low') return 'text-blue-500';
+  return 'text-gray-500';
+}
+
+function getSeverityDescription(severity: string): string {
+  const lowerSeverity = severity.toLowerCase();
+  if (lowerSeverity === 'high' || lowerSeverity === 'critical') 
+    return 'High Impact - Requires immediate attention and mitigation';
+  if (lowerSeverity === 'medium') 
+    return 'Medium Impact - Should be addressed in the near term';
+  if (lowerSeverity === 'low') 
+    return 'Low Impact - Address as part of regular security maintenance';
+  return 'Informational - General security consideration';
+}
 
 export default SecurityRisksCard;
