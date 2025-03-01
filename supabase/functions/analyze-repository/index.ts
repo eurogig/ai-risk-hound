@@ -105,16 +105,24 @@ const uniqueComponents = [] as AIComponent[];
 // Update pattern matching to be more precise
 const aiPatterns = {
   modelInvocation: [
-    /ChatOpenAI\s*\(/i,                    // LangChain
-    /openai\.(chat|completion)\s*\(/i,     // OpenAI direct
-    /anthropic\.(complete|messages)\s*\(/i, // Anthropic
-    /llm\.(invoke|predict|call)\s*\(/i     // Generic LLM
+    // LangChain patterns (multiple versions)
+    /from\s+langchain.*import.*Chat/i,
+    /from\s+langchain.*import.*Model/i,
+    /Chat\w+\s*\(/i,  // Catches ChatOpenAI, ChatAnthropic, etc.
+    
+    // Generic model operations
+    /\.(generate|predict|create|complete|chat)/i,
+    /model\.(invoke|call|run)/i,
+    
+    // Provider specific
+    /(openai|anthropic|google|huggingface|cohere)/i
   ],
   vectorOperations: [
-    /index\.query\s*\(/i,                  // Pinecone
-    /\.similarity_search\s*\(/i,           // LangChain
-    /\.vector_search\s*\(/i,               // Generic
-    /(pinecone|weaviate|qdrant|chroma)\./i // Vector DBs
+    // Vector DB operations
+    /(pinecone|weaviate|qdrant|chroma|milvus)/i,
+    /\.(query|search|similarity|nearest|upsert)/i,
+    /vector.*?search/i,
+    /embedding.*?search/i
   ],
   embeddingGeneration: [
     /\.embed\s*\(/i,
@@ -128,10 +136,10 @@ const aiPatterns = {
     /messages:\s*\[\s*{\s*role:\s*['"]system['"]/i
   ],
   modelConfig: [
-    /temperature:\s*[0-9.]+/,
-    /max_tokens:\s*\d+/,
-    /top_[pk]:\s*[0-9.]+/,
-    /frequency_penalty:\s*[0-9.]+/
+    /temperature\s*=\s*[0-9.]+/,           // Temperature setting
+    /top_p\s*=\s*[0-9.]+/,                 // Top-p setting
+    /frequency_penalty\s*=\s*[0-9.]+/,      // Frequency penalty
+    /presence_penalty\s*=\s*[0-9.]+/        // Presence penalty
   ],
   credentialExposure: [
     /api[_-]?key\s*[:=]\s*['"`][^'"`]+['"`]/i,
