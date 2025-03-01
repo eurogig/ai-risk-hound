@@ -35,14 +35,31 @@ type AIComponent = {
   sourcePath?: string;
 };
 
+// Update the CodeReference type with more specific categories
+type ReferenceType = 
+  // Model Operations
+  | 'model_invocation'      // Direct LLM calls
+  | 'model_config'          // Model configuration
+  | 'prompt_definition'     // System/user prompts
+  // Vector Operations
+  | 'vector_operation'      // Vector DB operations
+  | 'embedding_generation'  // Embedding creation
+  // Security Related
+  | 'credential_exposure'   // API keys, secrets
+  | 'data_handling';        // Training data, fine-tuning
+
 type CodeReference = {
   id: string;
   file: string;
   line: number;
   snippet: string;
-  context?: string;
-  type?: string;
-  confidence?: number;
+  context: {
+    before: string[];    // Lines before the match
+    after: string[];     // Lines after the match
+    scope?: string;      // Function/class scope if detectable
+  };
+  type: ReferenceType;
+  confidence: number;
   verified: boolean;
   securityRisk?: boolean;
   llmUsage?: boolean;
@@ -82,6 +99,55 @@ const recommendations: string[] = [];
 const foundComponents: AIComponent[] = [];
 const finalFiles: RepositoryFile[] = [];
 const filePromises: Promise<RepositoryFile | null>[] = [];
+const risks: SecurityRisk[] = [];
+const uniqueComponents: AIComponent[] = [];
+
+// Enhanced pattern matching
+const aiPatterns = {
+  modelInvocation: [
+    /\.(generate|create|chat|complete|predict)\s*\(/i,
+    /completion\.create\s*\(/i,
+    /chat\.create\s*\(/i,
+    /llm\.(invoke|predict|generate)\s*\(/i,
+    /openai\.(chat|completion|generate)\s*\(/i,
+    /anthropic\.(complete|messages\.create)\s*\(/i
+  ],
+  vectorOperations: [
+    /\.(similarity_search|vector_search|search_by_vector)\s*\(/i,
+    /\.(add_texts|add_embeddings|upsert)\s*\(/i,
+    /\.(query|search)\s*\(/i,
+    /(pinecone|weaviate|qdrant|chroma)\./i
+  ],
+  embeddingGeneration: [
+    /\.embed\s*\(/i,
+    /\.embedding\s*\(/i,
+    /embeddings\.create\s*\(/i,
+    /\.encode\s*\(/i
+  ],
+  promptDefinition: [
+    /system_prompt|systemPrompt|SYSTEM_PROMPT/,
+    /role:\s*['"]system['"],\s*content:/i,
+    /messages:\s*\[\s*{\s*role:\s*['"]system['"]/i
+  ],
+  modelConfig: [
+    /temperature:\s*[0-9.]+/,
+    /max_tokens:\s*\d+/,
+    /top_[pk]:\s*[0-9.]+/,
+    /frequency_penalty:\s*[0-9.]+/
+  ],
+  credentialExposure: [
+    /api[_-]?key\s*[:=]\s*['"`][^'"`]+['"`]/i,
+    /secret\s*[:=]\s*['"`][^'"`]+['"`]/i,
+    /password\s*[:=]\s*['"`][^'"`]+['"`]/i,
+    /token\s*[:=]\s*['"`][^'"`]+['"`]/i
+  ],
+  dataHandling: [
+    /\.fine_tune\s*\(/i,
+    /\.train\s*\(/i,
+    /training_data|train_data/i,
+    /dataset\.load\s*\(/i
+  ]
+};
 
 // Define the serve function
 serve(async (req) => {
@@ -469,27 +535,6 @@ function findPotentialCodeReferences(repositoryContent, aiComponents) {
   // Get list of AI component names to search for
   const componentKeywords = aiComponents.map(comp => comp.name?.toLowerCase()).filter(Boolean);
   
-  // More specific AI-related patterns
-  const aiPatterns = {
-    modelInvocation: [
-      /\.generate\s*\(/i,
-      /\.create(?:Completion|ChatCompletion)\s*\(/i,
-      /\.complete\s*\(/i,
-      /\.predict\s*\(/i,
-      /\.embed(?:ding)?\s*\(/i
-    ],
-    configPatterns: [
-      /temperature\s*[:=]\s*[0-9.]+/,
-      /max_tokens\s*[:=]\s*\d+/,
-      /top[_-]?[pk]\s*[:=]\s*[0-9.]+/
-    ],
-    promptPatterns: [
-      /system_prompt\s*[:=]\s*[`'"]/i,
-      /user_prompt\s*[:=]\s*[`'"]/i,
-      /messages\s*[:=]\s*\[\s*{\s*role:/i
-    ]
-  };
-
   // Scan through repository files
   for (const file of repositoryContent.files) {
     // Skip binary or extremely large files
@@ -514,32 +559,54 @@ function findPotentialCodeReferences(repositoryContent, aiComponents) {
       
       // Check for actual AI component usage (not just imports)
       const hasModelInvocation = aiPatterns.modelInvocation.some(pattern => pattern.test(line));
-      const hasConfigPattern = aiPatterns.configPatterns.some(pattern => pattern.test(line));
-      const hasPromptPattern = aiPatterns.promptPatterns.some(pattern => pattern.test(line));
+      const hasVectorOperation = aiPatterns.vectorOperations.some(pattern => pattern.test(line));
+      const hasEmbeddingGeneration = aiPatterns.embeddingGeneration.some(pattern => pattern.test(line));
+      const hasPromptDefinition = aiPatterns.promptDefinition.some(pattern => pattern.test(line));
+      const hasModelConfig = aiPatterns.modelConfig.some(pattern => pattern.test(line));
+      const hasCredentialExposure = aiPatterns.credentialExposure.some(pattern => pattern.test(line));
+      const hasDataHandling = aiPatterns.dataHandling.some(pattern => pattern.test(line));
       
       // Calculate confidence based on context
       let confidence = 0;
-      let referenceType = null;
+      let referenceType: ReferenceType | null = null;
       
       if (hasModelInvocation) {
         confidence = 0.9;
         referenceType = 'model_invocation';
-      } else if (hasPromptPattern) {
+      } else if (hasVectorOperation) {
+        confidence = 0.8;
+        referenceType = 'vector_operation';
+      } else if (hasEmbeddingGeneration) {
+        confidence = 0.7;
+        referenceType = 'embedding_generation';
+      } else if (hasPromptDefinition) {
         confidence = 0.8;
         referenceType = 'prompt_definition';
-      } else if (hasConfigPattern) {
+      } else if (hasModelConfig) {
         confidence = 0.7;
         referenceType = 'model_config';
+      } else if (hasCredentialExposure) {
+        confidence = 0.95;
+        referenceType = 'credential_exposure';
+      } else if (hasDataHandling) {
+        confidence = 0.9;
+        referenceType = 'data_handling';
       }
       
       // Only add high-confidence references
       if (confidence > 0.6) {
+        const afterLines = lines.slice(index + 1, index + 1 + 3);
+        
         codeReferences.push({
           id: `ref_${refId++}`,
           file: file.path,
           line: lineNumber,
           snippet: line.trim(),
-          context: contextBuffer.join('\n'),
+          context: {
+            before: [...contextBuffer],
+            after: afterLines,
+            scope: detectScope(lines, lineNumber)
+          },
           type: referenceType,
           confidence: confidence,
           verified: true
@@ -566,7 +633,11 @@ function findPotentialCodeReferences(repositoryContent, aiComponents) {
           file: file.path,
           line: lineNumber,
           snippet: line.trim(),
-          context: contextBuffer.join('\n'),
+          context: {
+            before: [...contextBuffer],
+            after: [],
+            scope: detectScope(lines, lineNumber)
+          },
           type: 'credential_exposure',
           confidence: 0.95,
           verified: true
@@ -894,6 +965,13 @@ function findCodeReferences(files, aiComponents) {
             file: file.path,
             line: lineNumber,
             snippet: line.trim(),
+            context: {
+              before: [],
+              after: [],
+              scope: detectScope(lines, lineNumber)
+            },
+            type: 'model_invocation',
+            confidence: 0.9,
             verified: true
           });
         }
@@ -908,6 +986,13 @@ function findCodeReferences(files, aiComponents) {
             file: file.path,
             line: lineNumber,
             snippet: line.trim(),
+            context: {
+              before: [],
+              after: [],
+              scope: detectScope(lines, lineNumber)
+            },
+            type: 'model_invocation',
+            confidence: 0.9,
             verified: true
           });
         }
@@ -921,6 +1006,13 @@ function findCodeReferences(files, aiComponents) {
             file: file.path,
             line: lineNumber,
             snippet: line.trim(),
+            context: {
+              before: [],
+              after: [],
+              scope: detectScope(lines, lineNumber)
+            },
+            type: 'model_invocation',
+            confidence: 0.9,
             verified: true
           });
         }
@@ -936,6 +1028,13 @@ function findCodeReferences(files, aiComponents) {
           file: file.path,
           line: lineNumber,
           snippet: line.trim(),
+          context: {
+            before: [],
+            after: [],
+            scope: detectScope(lines, lineNumber)
+          },
+          type: 'credential_exposure',
+          confidence: 0.95,
           verified: true,
           securityRisk: true
         });
@@ -950,6 +1049,13 @@ function findCodeReferences(files, aiComponents) {
           file: file.path,
           line: lineNumber,
           snippet: line.trim(),
+          context: {
+            before: [],
+            after: [],
+            scope: detectScope(lines, lineNumber)
+          },
+          type: 'model_invocation',
+          confidence: 0.9,
           verified: true,
           llmUsage: true
         });
@@ -1632,4 +1738,16 @@ function isLikelySystemPrompt(line: string, fileContext: { path: string, content
                      fileContext.path.toLowerCase().includes('spec');
 
   return hasSubstantialContent && !isTestFile;
+}
+
+// Simple scope detection
+function detectScope(lines: string[], currentLine: number): string | undefined {
+  // Look up for function/class definition
+  for (let i = currentLine; i >= 0; i--) {
+    const line = lines[i].trim();
+    if (line.match(/^(function|class|const|let|var)\s+\w+/)) {
+      return line;
+    }
+  }
+  return undefined;
 }
