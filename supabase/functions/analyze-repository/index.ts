@@ -456,8 +456,20 @@ function findPotentialCodeReferences(repositoryContent, aiComponents) {
       }
       
       // Special handling for credential exposure (higher precision)
-      if (lowerLine.match(/(?:api[_-]?key|secret|password|token)\s*[:=]\s*['"`][^'"`]+['"`]/i) &&
-          !lowerLine.match(/process\.env|os\.environ|getenv|config\./i)) {
+      if (lowerLine.match(/(?:api[_-]?key|secret|password|token)\s*[:=]\s*['"`][^'"`]+['"`]/i)) {
+        // Skip if it's in an enum or constant definition
+        if (lowerLine.match(/enum\s+|const\s+.*?=\s*{/i)) {
+          return;
+        }
+        // Skip if it's a template/example
+        if (lowerLine.match(/example|template|your.*?here|placeholder/i)) {
+          return;
+        }
+        // Skip if it's referencing environment variables
+        if (lowerLine.match(/process\.env|os\.environ|getenv|config\./i)) {
+          return;
+        }
+        // Only then add as credential exposure
         codeReferences.push({
           id: `ref_${refId++}`,
           file: file.path,
@@ -1320,7 +1332,21 @@ IMPORTANT: Always include these fundamental security risks when LLM components a
 2. LLM Jailbreak Vulnerability - potential for bypassing safety guardrails
 3. Potential for Hallucinations - risk of presenting false information as factual
 
-For code_references, include only actual code you can verify from the provided files.`;
+For code_references, include only actual code you can verify from the provided files.
+
+IMPORTANT: For ALL security risks, use ONLY these OWASP LLM categories:
+- LLM01:2025 Prompt Injection
+- LLM02:2025 Sensitive Information Disclosure
+- LLM03:2025 Supply Chain
+- LLM04:2025 Data and Model Poisoning
+- LLM05:2025 Improper Output Handling
+- LLM06:2025 Excessive Agency
+- LLM07:2025 System Prompt Leakage
+- LLM08:2025 Vector and Embedding Weaknesses
+- LLM09:2025 Misinformation
+- LLM10:2025 Unbounded Consumption
+
+Do not use any other OWASP categories.`;
 
   return prompt;
 }
