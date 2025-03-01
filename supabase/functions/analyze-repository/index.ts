@@ -102,27 +102,26 @@ const filePromises = [] as Promise<RepositoryFile | null>[];
 const risks = [] as SecurityRisk[];
 const uniqueComponents = [] as AIComponent[];
 
+// Add reference deduplication
+const seenReferences = new Set<string>();
+
+function addCodeReference(references: CodeReference[], reference: CodeReference) {
+  const key = `${reference.file}:${reference.line}:${reference.type}`;
+  if (!seenReferences.has(key)) {
+    seenReferences.add(key);
+    references.push(reference);
+  }
+}
+
 // Update pattern matching to be more precise
 const aiPatterns = {
   modelInvocation: [
-    // LangChain patterns (multiple versions)
-    /from\s+langchain.*import.*Chat/i,
-    /from\s+langchain.*import.*Model/i,
-    /Chat\w+\s*\(/i,  // Catches ChatOpenAI, ChatAnthropic, etc.
-    
-    // Generic model operations
-    /\.(generate|predict|create|complete|chat)/i,
-    /model\.(invoke|call|run)/i,
-    
-    // Provider specific
-    /(openai|anthropic|google|huggingface|cohere)/i
+    /\.(generate|predict|complete|chat)\(/i,  // Must include parentheses
+    /new\s+(GPT|LLM|Completion)/i,           // Constructor patterns
   ],
   vectorOperations: [
-    // Vector DB operations
-    /(pinecone|weaviate|qdrant|chroma|milvus)/i,
-    /\.(query|search|similarity|nearest|upsert)/i,
-    /vector.*?search/i,
-    /embedding.*?search/i
+    /\.(embed|encode|vectorize|similarity)\(/i,
+    /new\s+(Embedding|Vectorizer)/i,
   ],
   embeddingGeneration: [
     /\.embed\s*\(/i,
@@ -629,7 +628,7 @@ function findPotentialCodeReferences(repositoryContent: RepositoryContent) {
       if (confidence > 0.6) {
         const afterLines = lines.slice(index + 1, index + 1 + 3);
         
-        codeReferences.push({
+        addCodeReference(codeReferences, {
           id: `ref_${refId++}`,
           file: file.path,
           line: lineNumber,
@@ -660,7 +659,7 @@ function findPotentialCodeReferences(repositoryContent: RepositoryContent) {
           return;
         }
         // Only then add as credential exposure
-        codeReferences.push({
+        addCodeReference(codeReferences, {
           id: `ref_${refId++}`,
           file: file.path,
           line: lineNumber,
@@ -992,7 +991,7 @@ function findCodeReferences(files, aiComponents) {
              lowerLine.includes(`from ${componentName}`) ||
              lowerLine.match(new RegExp(`${componentName}\\.\\w+`)))) {
           
-          codeReferences.push({
+          addCodeReference(codeReferences, {
             id: `ref_${refId++}`,
             file: file.path,
             line: lineNumber,
@@ -1013,7 +1012,7 @@ function findCodeReferences(files, aiComponents) {
             (lowerLine.includes(`import`) && lowerLine.includes(componentName) ||
              lowerLine.includes(`require`) && lowerLine.includes(componentName))) {
           
-          codeReferences.push({
+          addCodeReference(codeReferences, {
             id: `ref_${refId++}`,
             file: file.path,
             line: lineNumber,
@@ -1033,7 +1032,7 @@ function findCodeReferences(files, aiComponents) {
         if (file.extension === '.java' &&
             lowerLine.includes(`import`) && lowerLine.includes(componentName)) {
           
-          codeReferences.push({
+          addCodeReference(codeReferences, {
             id: `ref_${refId++}`,
             file: file.path,
             line: lineNumber,
@@ -1055,7 +1054,7 @@ function findCodeReferences(files, aiComponents) {
           line.match(/=|\:|const|let|var/) &&
           !line.match(/process\.env|os\.environ|getenv|System\.getenv/)) {
         
-        codeReferences.push({
+        addCodeReference(codeReferences, {
           id: `ref_${refId++}`,
           file: file.path,
           line: lineNumber,
@@ -1076,7 +1075,7 @@ function findCodeReferences(files, aiComponents) {
       if (line.match(/prompt|completion|chat|llm|gpt|generate|token/i) && 
           (line.match(/openai/i) || line.match(/anthropic/i) || line.match(/generate_text/i) || line.match(/llm\./i))) {
         
-        codeReferences.push({
+        addCodeReference(codeReferences, {
           id: `ref_${refId++}`,
           file: file.path,
           line: lineNumber,
@@ -1830,4 +1829,32 @@ function scanRepositoryFiles(repositoryContent: RepositoryContent) {
     scanned: Array.from(scannedFiles),
     skipped: Array.from(skippedFiles)
   };
+}
+
+// Add context validation
+function isValidAIContext(line: string, context: string[]): boolean {
+  // Skip test files
+  if (context.some(l => l.includes('test') || l.includes('spec'))) {
+    return false;
+  }
+  
+  const trimmedLine = line.trim();
+  
+  // Skip comments across different languages
+  if (
+    trimmedLine.startsWith('//') ||    // JavaScript/TypeScript
+    trimmedLine.startsWith('/*') ||    // Multi-line in many languages
+    trimmedLine.startsWith('#') ||     // Python/Ruby/Shell
+    trimmedLine.startsWith('--') ||    // SQL
+    trimmedLine.startsWith('<!--')     // HTML/XML
+  ) {
+    return false;
+  }
+
+  // Skip basic variable assignments
+  if (line.match(/^\s*(const|let|var|my|dim|private|public)\s+\w+\s*=/)) {
+    return false;
+  }
+
+  return true;
 }
