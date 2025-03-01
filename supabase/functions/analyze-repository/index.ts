@@ -92,31 +92,29 @@ type AnalysisResult = {
   debug?: any;
 };
 
-// Initialize arrays with proper types
-const contextBuffer: string[] = [];
-const codeReferences: CodeReference[] = [];
-const recommendations: string[] = [];
-const foundComponents: AIComponent[] = [];
-const finalFiles: RepositoryFile[] = [];
-const filePromises: Promise<RepositoryFile | null>[] = [];
-const risks: SecurityRisk[] = [];
-const uniqueComponents: AIComponent[] = [];
+// Initialize arrays with explicit types
+const contextBuffer = [] as string[];
+const codeReferences = [] as CodeReference[];
+const recommendations = [] as string[];
+const foundComponents = [] as AIComponent[];
+const finalFiles = [] as RepositoryFile[];
+const filePromises = [] as Promise<RepositoryFile | null>[];
+const risks = [] as SecurityRisk[];
+const uniqueComponents = [] as AIComponent[];
 
-// Enhanced pattern matching
+// Update pattern matching to be more precise
 const aiPatterns = {
   modelInvocation: [
-    /\.(generate|create|chat|complete|predict)\s*\(/i,
-    /completion\.create\s*\(/i,
-    /chat\.create\s*\(/i,
-    /llm\.(invoke|predict|generate)\s*\(/i,
-    /openai\.(chat|completion|generate)\s*\(/i,
-    /anthropic\.(complete|messages\.create)\s*\(/i
+    /ChatOpenAI\s*\(/i,                    // LangChain
+    /openai\.(chat|completion)\s*\(/i,     // OpenAI direct
+    /anthropic\.(complete|messages)\s*\(/i, // Anthropic
+    /llm\.(invoke|predict|call)\s*\(/i     // Generic LLM
   ],
   vectorOperations: [
-    /\.(similarity_search|vector_search|search_by_vector)\s*\(/i,
-    /\.(add_texts|add_embeddings|upsert)\s*\(/i,
-    /\.(query|search)\s*\(/i,
-    /(pinecone|weaviate|qdrant|chroma)\./i
+    /index\.query\s*\(/i,                  // Pinecone
+    /\.similarity_search\s*\(/i,           // LangChain
+    /\.vector_search\s*\(/i,               // Generic
+    /(pinecone|weaviate|qdrant|chroma)\./i // Vector DBs
   ],
   embeddingGeneration: [
     /\.embed\s*\(/i,
@@ -148,6 +146,14 @@ const aiPatterns = {
     /dataset\.load\s*\(/i
   ]
 };
+
+// Add type guard for repository content
+function isValidRepositoryContent(content: any): content is RepositoryContent {
+  return content && 
+         !('error' in content) && 
+         Array.isArray(content.files) &&
+         typeof content.repositoryName === 'string';
+}
 
 // Define the serve function
 serve(async (req) => {
@@ -198,14 +204,16 @@ serve(async (req) => {
     
     if (debugMode) {
       // Limit debug info to avoid huge responses
-      debugInfo = {
-        fileCount: repositoryContent.files.length,
-        filePaths: repositoryContent.files.map(f => f.path).slice(0, 100), // Just send first 100 paths for debugging
-        totalFilesFound: repositoryContent.files.length,
-        repositoryName: repositoryContent.repositoryName,
-        repoSize: JSON.stringify(repositoryContent).length,
-      };
-      console.log(`Debug info: ${JSON.stringify(debugInfo, null, 2)}`);
+      if (isValidRepositoryContent(repositoryContent)) {
+        debugInfo = {
+          fileCount: repositoryContent.files.length,
+          filePaths: repositoryContent.files.map(f => f.path).slice(0, 100),
+          totalFilesFound: repositoryContent.files.length,
+          repositoryName: repositoryContent.repositoryName,
+          repoSize: JSON.stringify(repositoryContent).length,
+        };
+        console.log(`Debug info: ${JSON.stringify(debugInfo, null, 2)}`);
+      }
     }
 
     // Extract components directly from repository content as a fallback mechanism
@@ -293,9 +301,8 @@ function postProcessAnalysisResults(analysisResult, repositoryContent) {
   result.security_risks = result.security_risks.map(risk => {
     const riskLower = (risk.risk || '').toLowerCase();
     const relatedRefs = result.code_references.filter(ref => {
-      // Match based on risk type and reference type
       if (riskLower.includes('prompt injection') && ref.type === 'model_invocation') return true;
-      if (riskLower.includes('data leakage') && ref.type === 'model_invocation') return true;
+      if (riskLower.includes('data leakage') && ref.type === 'vector_operation') return true;
       if (riskLower.includes('hallucination') && ref.type === 'model_invocation') return true;
       if ((riskLower.includes('api key') || riskLower.includes('credential')) && ref.type === 'credential_exposure') return true;
       if (riskLower.includes('model poisoning') && ref.type === 'model_invocation') return true;
@@ -694,7 +701,7 @@ function linkCodeReferencesToRisks(result) {
           risk.related_code_references.push(ref.id);
         }
       }
-      else if (riskLower.includes('data leakage') && ref.model_invocation) {
+      else if (riskLower.includes('data leakage') && ref.vector_operation) {
         if (!risk.related_code_references.includes(ref.id)) {
           risk.related_code_references.push(ref.id);
         }
@@ -941,7 +948,7 @@ function findCodeReferences(files, aiComponents) {
   
   files.forEach(file => {
     // Focus on Python, JavaScript, and other code files
-    if (!['.py', '.js', '.ts', '.jsx', '.tsx', '.java'].includes(file.extension)) {
+    if (!['.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.go', '.php', '.rb'].includes(file.extension)) {
       return;
     }
     
