@@ -17,6 +17,72 @@ const openaiApiKey = Deno.env.get('OPENAI_API_KEY')
 // Simple in-memory cache (will reset on function restart)
 const analysisCache = new Map();
 
+// Add at the top of the file
+type RepositoryContent = {
+  repositoryName: string;
+  files: RepositoryFile[];
+};
+
+type RepositoryFile = {
+  path: string;
+  content: string;
+  extension: string;
+};
+
+type AIComponent = {
+  name: string;
+  type: string;
+  sourcePath?: string;
+};
+
+type CodeReference = {
+  id: string;
+  file: string;
+  line: number;
+  snippet: string;
+  context?: string;
+  type?: string;
+  confidence?: number;
+  verified: boolean;
+  securityRisk?: boolean;
+  llmUsage?: boolean;
+};
+
+type SecurityRisk = {
+  risk: string;
+  risk_name?: string;
+  severity: 'high' | 'medium' | 'low';
+  description: string;
+  related_code_references?: string[];
+  owasp_category?: {
+    id: string;
+    name: string;
+    description: string;
+  };
+};
+
+type AnalysisOptions = {
+  systemPrompt?: string;
+  debugMode?: boolean;
+};
+
+type AnalysisResult = {
+  ai_components_detected: AIComponent[];
+  security_risks: SecurityRisk[];
+  code_references: CodeReference[];
+  confidence_score: number;
+  remediation_suggestions: string[];
+  debug?: any;
+};
+
+// Initialize arrays with proper types
+const contextBuffer: string[] = [];
+const codeReferences: CodeReference[] = [];
+const recommendations: string[] = [];
+const foundComponents: AIComponent[] = [];
+const finalFiles: RepositoryFile[] = [];
+const filePromises: Promise<RepositoryFile | null>[] = [];
+
 // Define the serve function
 serve(async (req) => {
   // This is needed if you're planning to invoke your function from a browser.
@@ -155,8 +221,33 @@ function postProcessAnalysisResults(analysisResult, repositoryContent) {
   // Find possible code references from the repository content and link them to risks
   if (result.code_references.length === 0) {
     result.code_references = findPotentialCodeReferences(repositoryContent, result.ai_components_detected);
-    linkCodeReferencesToRisks(result);
   }
+
+  // Enhanced linking of code references to risks - maintain existing structure
+  result.security_risks = result.security_risks.map(risk => {
+    const riskLower = (risk.risk || '').toLowerCase();
+    const relatedRefs = result.code_references.filter(ref => {
+      // Match based on risk type and reference type
+      if (riskLower.includes('prompt injection') && ref.type === 'model_invocation') return true;
+      if (riskLower.includes('data leakage') && ref.type === 'model_invocation') return true;
+      if (riskLower.includes('hallucination') && ref.type === 'model_invocation') return true;
+      if ((riskLower.includes('api key') || riskLower.includes('credential')) && ref.type === 'credential_exposure') return true;
+      if (riskLower.includes('model poisoning') && ref.type === 'model_invocation') return true;
+      if ((riskLower.includes('system prompt') || riskLower.includes('hardcoded prompt')) && ref.type === 'prompt_definition') return true;
+      
+      return false;
+    });
+
+    return {
+      ...risk,
+      related_code_references: relatedRefs.map(ref => ref.id),
+      // Keep existing fields that frontend components expect
+      risk_name: risk.risk_name || risk.risk,
+      severity: risk.severity || 'medium',
+      description: risk.description || '',
+      owasp_category: risk.owasp_category
+    };
+  });
   
   // Generate remediation suggestions if none exist
   if (result.remediation_suggestions.length === 0) {

@@ -1,4 +1,3 @@
-
 import { CodeReference, SecurityRisk, AIComponent } from "@/types/reportTypes";
 import { extractPromptsFromCode, createSystemPromptRisk } from "./promptDetectionUtils";
 
@@ -6,26 +5,9 @@ export const getRelatedCodeReferences = (
   risk: SecurityRisk,
   verifiedCodeReferences: CodeReference[]
 ) => {
-  // If risk has no related_code_references, check for system prompt related references by type
-  if (!risk.related_code_references || risk.related_code_references.length === 0) {
-    // Check if this is a system prompt risk
-    const riskName = risk.risk || risk.risk_name || '';
-    const isSystemPromptRisk = riskName.toLowerCase().includes('system prompt') || 
-                               riskName.toLowerCase().includes('hardcoded');
-                               
-    if (isSystemPromptRisk) {
-      // Find prompt related references
-      return verifiedCodeReferences.filter(ref => 
-        ref.type === 'prompt_definition' || 
-        ref.snippet.toLowerCase().includes('system_prompt') ||
-        ref.snippet.toLowerCase().includes('system prompt')
-      );
-    }
-  }
-
-  // Return references based on ID relationship
+  // Simply return references based on pre-computed relationships
   return verifiedCodeReferences.filter(
-    (ref) => risk.related_code_references && risk.related_code_references.includes(ref.id)
+    (ref) => risk.related_code_references?.includes(ref.id)
   );
 };
 
@@ -77,19 +59,9 @@ export const getUnrelatedCodeReferences = (
   securityRisks: SecurityRisk[],
   verifiedCodeReferences: CodeReference[]
 ): CodeReference[] => {
-  // Get all the code reference IDs that are related to security risks
-  const relatedReferenceIds = new Set<string>();
-  
-  securityRisks.forEach(risk => {
-    if (risk.related_code_references) {
-      risk.related_code_references.forEach(refId => {
-        relatedReferenceIds.add(refId);
-      });
-    }
-  });
-  
-  // Return only the code references that aren't related to any security risks
-  return verifiedCodeReferences.filter(
-    ref => !relatedReferenceIds.has(ref.id)
+  // Use pre-computed relationships
+  const relatedReferenceIds = new Set(
+    securityRisks.flatMap(risk => risk.related_code_references || [])
   );
+  return verifiedCodeReferences.filter(ref => !relatedReferenceIds.has(ref.id));
 };

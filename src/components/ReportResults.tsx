@@ -1,8 +1,6 @@
-
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { InfoIcon, AlertTriangleIcon } from "lucide-react";
 import { RepositoryReport } from "@/types/reportTypes";
-import { enhanceCodeReferences, getUnrelatedCodeReferences } from "@/utils/riskAnalysisUtils";
 import ConfidenceScoreCard from "./reportSections/ConfidenceScoreCard";
 import SecurityRisksCard from "./reportSections/SecurityRisksCard";
 import AIComponentsCard from "./reportSections/AIComponentsCard";
@@ -82,43 +80,11 @@ const ReportResults = ({ report }: ReportResultsProps) => {
   console.log("Verified code references:", verifiedCodeReferences.length);
   
   try {
-    // Enhance the report by filling in missing connections and detecting hardcoded system prompts
-    const enhancedSecurityRisks = enhanceCodeReferences(
-      report.security_risks,
-      verifiedCodeReferences,
-      report.confidence_score
-    );
-    
-    console.log("Enhanced security risks:", JSON.stringify(enhancedSecurityRisks, null, 2));
-    
-    // Count the different types of risks to make sure we're detecting all of them
-    const riskTypes = {
-      promptInjection: 0,
-      dataLeakage: 0,
-      hallucination: 0,
-      apiKeyExposure: 0,
-      modelPoisoning: 0,
-      systemPromptLeakage: 0
-    };
-    
-    enhancedSecurityRisks.forEach(risk => {
-      if (!risk) return;
-      const riskName = (risk.risk || risk.risk_name || "").toLowerCase();
-      
-      if (riskName.includes("prompt injection")) riskTypes.promptInjection++;
-      if (riskName.includes("data leakage")) riskTypes.dataLeakage++;
-      if (riskName.includes("hallucination")) riskTypes.hallucination++;
-      if (riskName.includes("api key exposure")) riskTypes.apiKeyExposure++;
-      if (riskName.includes("model poisoning")) riskTypes.modelPoisoning++;
-      if (riskName.includes("system prompt") || riskName.includes("hardcoded")) riskTypes.systemPromptLeakage++;
-    });
-    
-    console.log("Risk type counts:", riskTypes);
-    
-    // Get code references that aren't related to any security risks
-    const unrelatedCodeReferences = getUnrelatedCodeReferences(
-      enhancedSecurityRisks,
-      verifiedCodeReferences
+    // Use the pre-processed data directly
+    const unrelatedCodeReferences = report.code_references.filter(ref => 
+      !report.security_risks.some(risk => 
+        risk.related_code_references?.includes(ref.id)
+      )
     );
 
     // Process remediation suggestions with more detailed handling
@@ -164,7 +130,7 @@ const ReportResults = ({ report }: ReportResultsProps) => {
 
         {/* Security Risks Section */}
         <SecurityRisksCard 
-          securityRisks={enhancedSecurityRisks} 
+          securityRisks={report.security_risks}
           verifiedCodeReferences={verifiedCodeReferences}
           aiComponents={report.ai_components_detected}
         />
