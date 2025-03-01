@@ -1,4 +1,3 @@
-
 import { CodeReference, SecurityRisk, AIComponent } from "@/types/reportTypes";
 import { extractPromptsFromCode, createSystemPromptRisk } from "./promptDetectionUtils";
 
@@ -7,6 +6,24 @@ export const getRelatedCodeReferences = (
   risk: SecurityRisk,
   verifiedCodeReferences: CodeReference[]
 ) => {
+  // If risk has no related_code_references, check for system prompt related references by type
+  if (!risk.related_code_references || risk.related_code_references.length === 0) {
+    // Check if this is a system prompt risk
+    const riskName = risk.risk || risk.risk_name || '';
+    const isSystemPromptRisk = riskName.toLowerCase().includes('system prompt') || 
+                               riskName.toLowerCase().includes('hardcoded');
+                               
+    if (isSystemPromptRisk) {
+      // Find prompt related references
+      return verifiedCodeReferences.filter(ref => 
+        ref.type === 'prompt_definition' || 
+        ref.snippet.toLowerCase().includes('system_prompt') ||
+        ref.snippet.toLowerCase().includes('system prompt')
+      );
+    }
+  }
+
+  // Return references based on ID relationship
   return verifiedCodeReferences.filter(
     (ref) => risk.related_code_references && risk.related_code_references.includes(ref.id)
   );

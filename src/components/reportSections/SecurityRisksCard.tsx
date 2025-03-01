@@ -1,4 +1,3 @@
-
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ShieldAlert, AlertTriangle, Info } from "lucide-react";
@@ -71,6 +70,23 @@ const SecurityRisksCard = ({
   
   // Convert map back to array
   const validSecurityRisks = Array.from(processedRisks.values());
+
+  // Explicitly log if we have the "Hardcoded System Prompts" risk
+  const systemPromptRisk = validSecurityRisks.find(risk => 
+    (risk.risk || '').toLowerCase().includes('hardcoded system prompt') || 
+    (risk.risk || '').toLowerCase().includes('system prompt leak')
+  );
+  
+  console.log("System Prompt risk found:", systemPromptRisk ? 'Yes' : 'No');
+  if (systemPromptRisk) {
+    // Check if there are any prompt definition references
+    const promptRefs = verifiedCodeReferences.filter(ref => 
+      ref.type === 'prompt_definition' || 
+      ref.snippet.toLowerCase().includes('system_prompt') ||
+      ref.snippet.toLowerCase().includes('system prompt')
+    );
+    console.log("Prompt definition references:", promptRefs.length);
+  }
   
   // Group risks by OWASP category for better organization
   const risksByOwaspCategory = validSecurityRisks.reduce((acc, risk) => {
