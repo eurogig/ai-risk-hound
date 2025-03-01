@@ -554,6 +554,7 @@ function enhanceRisksWithOwaspCategories(securityRisks) {
 // Function to find potential code references in repository
 function findPotentialCodeReferences(repositoryContent: RepositoryContent) {
   const codeReferences = [] as CodeReference[];
+  let refId = 1;  // Initialize reference ID counter
   console.log('Starting code reference scan...');
 
   for (const file of repositoryContent.files) {
