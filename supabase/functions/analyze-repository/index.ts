@@ -1283,8 +1283,13 @@ function formatRepositoryForAnalysis(repositoryName, files, preExtractedComponen
     { 
       "risk": "risk_name", 
       "severity": "high/medium/low", 
-      "description": "Description of the risk", 
-      "related_code_references": ["ref_id1", "ref_id2"]
+      "description": "Description of the risk",
+      "related_code_references": ["ref_id1", "ref_id2"],
+      "owasp_category": {
+        "id": "LLMxx:2025",  // Use ONLY OWASP LLM Top 10 2025 categories
+        "name": "Category Name",
+        "description": "Category description"
+      }
     }
   ],
   "code_references": [
