@@ -378,90 +378,123 @@ function findPotentialCodeReferences(repositoryContent, aiComponents) {
   // Get list of AI component names to search for
   const componentKeywords = aiComponents.map(comp => comp.name?.toLowerCase()).filter(Boolean);
   
-  // Add common AI-related keywords
-  const aiKeywords = [
-    'openai', 'gpt', 'llm', 'anthropic', 'claude', 'langchain', 
-    'huggingface', 'transformers', 'embedding', 'vector', 'prompt',
-    'completion', 'token', 'mistral', 'llama', 'pinecone', 'weaviate', 
-    'chromadb', 'qdrant', 'faiss'
-  ];
-  
-  // Combine all keywords
-  const allKeywords = [...new Set([...componentKeywords, ...aiKeywords])];
-  
+  // More specific AI-related patterns
+  const aiPatterns = {
+    modelInvocation: [
+      /\.generate\s*\(/i,
+      /\.create(?:Completion|ChatCompletion)\s*\(/i,
+      /\.complete\s*\(/i,
+      /\.predict\s*\(/i,
+      /\.embed(?:ding)?\s*\(/i
+    ],
+    configPatterns: [
+      /temperature\s*[:=]\s*[0-9.]+/,
+      /max_tokens\s*[:=]\s*\d+/,
+      /top[_-]?[pk]\s*[:=]\s*[0-9.]+/
+    ],
+    promptPatterns: [
+      /system_prompt\s*[:=]\s*[`'"]/i,
+      /user_prompt\s*[:=]\s*[`'"]/i,
+      /messages\s*[:=]\s*\[\s*{\s*role:/i
+    ]
+  };
+
   // Scan through repository files
   for (const file of repositoryContent.files) {
     // Skip binary or extremely large files
     if (!file.content || file.content.length > 100000) continue;
     
-    // Prioritize code files
+    // Focus on code files
     const codeExtensions = ['.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.go', '.php', '.rb'];
     const isCodeFile = codeExtensions.some(ext => file.path.endsWith(ext));
     
     if (!isCodeFile) continue;
-    
-    // Split into lines
+
     const lines = file.content.split('\n');
+    let contextBuffer = []; // Store previous lines for context
     
     lines.forEach((line, index) => {
       const lineNumber = index + 1;
       const lowerLine = line.toLowerCase();
       
-      // Check for AI-related code
-      const hasAIKeyword = allKeywords.some(keyword => lowerLine.includes(keyword));
+      // Update context buffer
+      contextBuffer.push(line);
+      if (contextBuffer.length > 5) contextBuffer.shift();
       
-      if (hasAIKeyword) {
-        // Check for specific patterns that suggest LLM usage
-        const isLLMUsage = 
-          (lowerLine.includes('import') && (lowerLine.includes('openai') || lowerLine.includes('anthropic') || lowerLine.includes('langchain'))) ||
-          lowerLine.includes('api_key') || 
-          lowerLine.includes('prompt') || 
-          lowerLine.includes('completion') || 
-          lowerLine.includes('embedding') ||
-          lowerLine.includes('llm') || 
-          lowerLine.includes('gpt');
-        
-        // Add code reference
+      // Check for actual AI component usage (not just imports)
+      const hasModelInvocation = aiPatterns.modelInvocation.some(pattern => pattern.test(line));
+      const hasConfigPattern = aiPatterns.configPatterns.some(pattern => pattern.test(line));
+      const hasPromptPattern = aiPatterns.promptPatterns.some(pattern => pattern.test(line));
+      
+      // Calculate confidence based on context
+      let confidence = 0;
+      let referenceType = null;
+      
+      if (hasModelInvocation) {
+        confidence = 0.9;
+        referenceType = 'model_invocation';
+      } else if (hasPromptPattern) {
+        confidence = 0.8;
+        referenceType = 'prompt_definition';
+      } else if (hasConfigPattern) {
+        confidence = 0.7;
+        referenceType = 'model_config';
+      }
+      
+      // Only add high-confidence references
+      if (confidence > 0.6) {
         codeReferences.push({
           id: `ref_${refId++}`,
           file: file.path,
           line: lineNumber,
           snippet: line.trim(),
-          verified: true,
-          llm_related: isLLMUsage
+          context: contextBuffer.join('\n'),
+          type: referenceType,
+          confidence: confidence,
+          verified: true
         });
       }
       
-      // Check for potential credential exposure
-      if (lowerLine.includes('api_key') || lowerLine.includes('secret') || lowerLine.includes('password') || lowerLine.includes('token')) {
-        if (lowerLine.includes('=') || lowerLine.includes(':') || lowerLine.includes('const ') || lowerLine.includes('let ') || lowerLine.includes('var ')) {
-          codeReferences.push({
-            id: `ref_${refId++}`,
-            file: file.path,
-            line: lineNumber,
-            snippet: line.trim(),
-            verified: true,
-            credential_related: true
-          });
-        }
-      }
-      
-      // Check for potential hardcoded system prompts
-      if (isLikelySystemPrompt(line, { path: file.path, content: file.content })) {
+      // Special handling for credential exposure (higher precision)
+      if (lowerLine.match(/(?:api[_-]?key|secret|password|token)\s*[:=]\s*['"`][^'"`]+['"`]/i) &&
+          !lowerLine.match(/process\.env|os\.environ|getenv|config\./i)) {
         codeReferences.push({
           id: `ref_${refId++}`,
           file: file.path,
           line: lineNumber,
           snippet: line.trim(),
-          verified: true,
-          prompt_related: true,
-          confidence: 0.85
+          context: contextBuffer.join('\n'),
+          type: 'credential_exposure',
+          confidence: 0.95,
+          verified: true
         });
       }
     });
   }
   
-  return codeReferences;
+  // Post-process to remove duplicates and near-duplicates
+  return deduplicateReferences(codeReferences);
+}
+
+// Helper function to deduplicate references
+function deduplicateReferences(references) {
+  const seen = new Set();
+  return references.filter(ref => {
+    // Create a signature based on file, type, and normalized snippet
+    const signature = `${ref.file}:${ref.type}:${normalizeSnippet(ref.snippet)}`;
+    if (seen.has(signature)) return false;
+    seen.add(signature);
+    return true;
+  });
+}
+
+// Helper to normalize code snippets for comparison
+function normalizeSnippet(snippet) {
+  return snippet
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .replace(/['"`]/g, '"')
+    .trim();
 }
 
 // Function to link code references to security risks
@@ -482,32 +515,32 @@ function linkCodeReferencesToRisks(result) {
     
     for (const ref of result.code_references) {
       // Link based on risk type
-      if (riskLower.includes('prompt injection') && ref.llm_related) {
+      if (riskLower.includes('prompt injection') && ref.model_invocation) {
         if (!risk.related_code_references.includes(ref.id)) {
           risk.related_code_references.push(ref.id);
         }
       }
-      else if (riskLower.includes('data leakage') && ref.llm_related) {
+      else if (riskLower.includes('data leakage') && ref.model_invocation) {
         if (!risk.related_code_references.includes(ref.id)) {
           risk.related_code_references.push(ref.id);
         }
       }
-      else if (riskLower.includes('hallucination') && ref.llm_related) {
+      else if (riskLower.includes('hallucination') && ref.model_invocation) {
         if (!risk.related_code_references.includes(ref.id)) {
           risk.related_code_references.push(ref.id);
         }
       }
-      else if ((riskLower.includes('api key') || riskLower.includes('credential')) && ref.credential_related) {
+      else if ((riskLower.includes('api key') || riskLower.includes('credential')) && ref.credential_exposure) {
         if (!risk.related_code_references.includes(ref.id)) {
           risk.related_code_references.push(ref.id);
         }
       }
-      else if (riskLower.includes('model poisoning') && ref.llm_related) {
+      else if (riskLower.includes('model poisoning') && ref.model_invocation) {
         if (!risk.related_code_references.includes(ref.id)) {
           risk.related_code_references.push(ref.id);
         }
       }
-      else if ((riskLower.includes('system prompt') || riskLower.includes('hardcoded prompt')) && ref.prompt_related) {
+      else if ((riskLower.includes('system prompt') || riskLower.includes('hardcoded prompt')) && ref.prompt_definition) {
         if (!risk.related_code_references.includes(ref.id)) {
           risk.related_code_references.push(ref.id);
         }
