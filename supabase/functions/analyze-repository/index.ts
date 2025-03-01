@@ -1776,9 +1776,12 @@ function isLikelySystemPrompt(line: string, fileContext: { path: string, content
 function detectScope(lines: string[], currentLine: number): string | undefined {
   // Look up for function/class definition
   for (let i = currentLine; i >= 0; i--) {
-    const line = lines[i].trim();
-    if (line.match(/^(function|class|const|let|var)\s+\w+/)) {
-      return line;
+    const line = lines[i];
+    if (!line) continue;  // Skip undefined lines
+    const trimmedLine = line.trim();
+
+    if (trimmedLine.match(/^(function|class|const|let|var)\s+\w+/)) {
+      return trimmedLine;
     }
   }
   return undefined;
