@@ -49,29 +49,25 @@ export const enhanceCodeReferences = (
   // Make a deep copy to avoid mutating the original array
   const enhancedRisks = JSON.parse(JSON.stringify(securityRisks)) as SecurityRisk[];
   
-  // Check specifically for system prompt references
-  const promptDefinitionRefs = verifiedCodeReferences.filter(ref => 
-    ref.type === 'prompt_definition' || 
-    ref.snippet.toLowerCase().includes('system_prompt') ||
-    ref.snippet.toLowerCase().includes('system prompt')
-  );
-  
-  console.log("Found prompt definition references:", promptDefinitionRefs.length);
-  
-  // Check if we already have a system prompt risk
-  const hasSystemPromptRisk = enhancedRisks.some(risk => {
-    const riskName = (risk.risk || risk.risk_name || "").toLowerCase();
-    return riskName.includes('system prompt') || riskName.includes('hardcoded system');
-  });
-  
-  // If we have prompt references but no system prompt risk, create one
-  if (promptDefinitionRefs.length > 0 && !hasSystemPromptRisk) {
-    console.log("Adding missing system prompt risk");
-    const systemPromptRisk = createSystemPromptRisk(
-      promptDefinitionRefs.map(ref => ref.id),
-      confidenceScore
-    );
-    enhancedRisks.push(systemPromptRisk);
+  // Process all risks, ensuring each is handled properly
+  for (const risk of enhancedRisks) {
+    // If this is a system prompt risk with empty related_code_references
+    if ((risk.risk || "").toLowerCase().includes('hardcoded system prompt') || 
+        (risk.risk || "").toLowerCase().includes('system prompt leak')) {
+      
+      // Find prompt definition references
+      const promptDefinitionRefs = verifiedCodeReferences.filter(ref => 
+        ref.type === 'prompt_definition' || 
+        ref.snippet.toLowerCase().includes('system_prompt') ||
+        ref.snippet.toLowerCase().includes('system prompt')
+      );
+      
+      // Add these references to the risk if they exist
+      if (promptDefinitionRefs.length > 0 && (!risk.related_code_references || risk.related_code_references.length === 0)) {
+        risk.related_code_references = promptDefinitionRefs.map(ref => ref.id);
+        console.log("Enhanced system prompt risk with references:", promptDefinitionRefs.length);
+      }
+    }
   }
   
   return enhancedRisks;
@@ -90,17 +86,6 @@ export const getUnrelatedCodeReferences = (
         relatedReferenceIds.add(refId);
       });
     }
-  });
-  
-  // Also check for prompt definitions that should be related to system prompt risks
-  const promptDefReferences = verifiedCodeReferences.filter(ref => 
-    ref.type === 'prompt_definition' || 
-    ref.snippet.toLowerCase().includes('system_prompt') ||
-    ref.snippet.toLowerCase().includes('system prompt')
-  );
-  
-  promptDefReferences.forEach(ref => {
-    relatedReferenceIds.add(ref.id);
   });
   
   // Return only the code references that aren't related to any security risks
