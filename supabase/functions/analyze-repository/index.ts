@@ -332,13 +332,13 @@ async function analyzeRepository(content: RepositoryContent): Promise<AnalysisRe
   try {
     console.log('Starting repository analysis...');
     
-    // Step 1: Analyze package files
-    console.log('Analyzing package files...');
-    const packageComponents = analyzePackageFiles(content.files);
-    console.log('Package components found:', packageComponents);
+    // Step 1: Detect AI components
+    console.log('Detecting AI components...');
+    const aiComponents = detectAIComponents(content.files);
+    console.log('AI components found:', aiComponents);
     
     // Step 2: Initialize tracking
-    const detectedLibraries = new Set(packageComponents.map(c => c.name));
+    const detectedLibraries = new Set(aiComponents.map(c => c.name));
     console.log('Detected libraries:', Array.from(detectedLibraries));
     
     const callGraph: CallGraph = {
@@ -348,7 +348,6 @@ async function analyzeRepository(content: RepositoryContent): Promise<AnalysisRe
 
     // Step 3: Scan for AI components
     console.log('Scanning for AI components...');
-    const aiComponents: AIComponent[] = [];
     const detectedImports = new Map<string, Set<string>>();
 
     for (const file of content.files) {
@@ -401,158 +400,27 @@ async function analyzeRepository(content: RepositoryContent): Promise<AnalysisRe
 
     // Step 4: Security risk analysis
     console.log('Analyzing security risks...');
-    // Initialize the risk registry at the beginning of the analyze function
-    const riskRegistry = {
-      "Hardcoded API Keys": {
-        risk: "Hardcoded API Keys",
-        severity: "high" as Severity,
-        description: "API keys or credentials found directly in code",
-        owaspCategory: OWASP_LLM_CATEGORIES.INSECURE_OUTPUT_HANDLING,
-        relatedComponents: [],
-        evidence: [] as CodeLocation[],
-        confidence: 0.95
-      },
-      "System Prompt Exposure": {
-        risk: "System Prompt Exposure",
-        severity: "medium" as Severity,
-        description: "System prompts found in code which could expose application logic",
-        owaspCategory: OWASP_LLM_CATEGORIES.SYSTEM_PROMPT_LEAKAGE,
-        relatedComponents: [],
-        evidence: [] as CodeLocation[],
-        confidence: 0.9
-      },
-      "Potential RAG Prompt Injection": {
-        risk: "Potential RAG Prompt Injection",
-        severity: "medium" as Severity,
-        description: "RAG implementation detected without clear input sanitization",
-        owaspCategory: OWASP_LLM_CATEGORIES.PROMPT_INJECTION,
-        relatedComponents: [],
-        evidence: [] as CodeLocation[],
-        confidence: 0.8
-      }
-    };
-
-    // Check for security risks in each file
-    for (const file of content.files) {
-      const lines = file.content.split('\n');
-      
-      // Check for API keys
-      const apiKeyPattern = /(api_key|apikey|api-key|OPENAI_API_KEY|PINECONEAPI|OPENAIKEY)[\s]*=[\s]*["']?[A-Za-z0-9\-_]+["']?/i;
-      lines.forEach((line, index) => {
-        if (apiKeyPattern.test(line)) {
-          riskRegistry["Hardcoded API Keys"].evidence.push({
-            file: file.path,
-            line: index + 1,
-            snippet: line.trim(),
-            context: {
-              before: lines.slice(Math.max(0, index - 2), index),
-              after: lines.slice(index + 1, Math.min(lines.length, index + 3)),
-              scope: 'Global'
-            }
-          });
-        }
-      });
-      
-      // Check for system prompts
-      const systemPromptPattern = /(system_prompt|system prompt|systemPrompt|SystemMessage)[\s]*=[\s]*["'`]|content=["'`]/i;
-      lines.forEach((line, index) => {
-        if (systemPromptPattern.test(line)) {
-          riskRegistry["System Prompt Exposure"].evidence.push({
-            file: file.path,
-            line: index + 1,
-            snippet: line.trim(),
-            context: {
-              before: lines.slice(Math.max(0, index - 2), index),
-              after: lines.slice(index + 1, Math.min(lines.length, index + 3)),
-              scope: 'Global'
-            }
-          });
-        }
-      });
-      
-      // Check for RAG implementations
-      if (file.content.includes('pinecone') || file.content.includes('vectordb') || 
-          file.content.includes('chroma') || file.content.includes('rag_data')) {
-        // Only add one evidence per file for RAG
-        riskRegistry["Potential RAG Prompt Injection"].evidence.push({
-          file: file.path,
-          line: 1,
-          snippet: "RAG implementation detected",
-          context: {
-            before: [],
-            after: [],
-            scope: 'Global'
-          }
-        });
-      }
-    }
-
-    // Convert registry to array, filtering out risks with no evidence
-    const securityRisks = Object.values(riskRegistry)
-      .filter(risk => risk.evidence.length > 0);
+    const securityRisks = detectSecurityRisks(content.files, aiComponents);
 
     console.log('Analysis complete. Found:');
     console.log(`- ${aiComponents.length} AI components`);
     console.log(`- ${securityRisks.length} security risks`);
     console.log(`- ${callGraph.nodes.length} files in call graph`);
 
-    // Before returning the final analysis, deduplicate security risks
-    const deduplicatedRisks = new Map();
-
-    // Group risks by name and merge evidence
-    securityRisks.forEach(risk => {
-      const riskName = risk.risk || risk.risk_name || '';
-      
-      if (deduplicatedRisks.has(riskName)) {
-        // Merge evidence from duplicate risks
-        const existingRisk = deduplicatedRisks.get(riskName);
-        
-        // Merge evidence arrays if they exist
-        if (risk.evidence && existingRisk.evidence) {
-          // Create a set of existing evidence to avoid exact duplicates
-          const existingEvidenceSet = new Set(
-            existingRisk.evidence.map(e => `${e.file}:${e.line}:${e.snippet}`)
-          );
-          
-          // Only add new evidence that doesn't already exist
-          risk.evidence.forEach(evidence => {
-            const evidenceKey = `${evidence.file}:${evidence.line}:${evidence.snippet}`;
-            if (!existingEvidenceSet.has(evidenceKey)) {
-              existingRisk.evidence.push(evidence);
-            }
-          });
-        }
-        
-        // Merge related components if they exist
-        if (risk.relatedComponents && existingRisk.relatedComponents) {
-          existingRisk.relatedComponents = [...new Set([
-            ...existingRisk.relatedComponents,
-            ...risk.relatedComponents
-          ])];
-        }
-      } else {
-        // Add new risk to the map
-        deduplicatedRisks.set(riskName, {...risk});
-      }
-    });
-
-    // Convert map back to array for the final response
-    const finalSecurityRisks = Array.from(deduplicatedRisks.values());
-
     return {
       repositoryName: content.repositoryName,
       timestamp: new Date().toISOString(),
       aiComponents,
-      securityRisks: finalSecurityRisks,
+      securityRisks,
       callGraph,
       summary: {
         totalAIUsage: aiComponents.length,
         risksByLevel: {
-          high: finalSecurityRisks.filter(r => r.severity === 'high').length,
-          medium: finalSecurityRisks.filter(r => r.severity === 'medium').length,
-          low: finalSecurityRisks.filter(r => r.severity === 'low').length
+          high: securityRisks.filter(r => r.severity === 'high').length,
+          medium: securityRisks.filter(r => r.severity === 'medium').length,
+          low: securityRisks.filter(r => r.severity === 'low').length
         },
-        topRisks: finalSecurityRisks
+        topRisks: securityRisks
           .sort((a, b) => b.confidence - a.confidence)
           .slice(0, 3)
           .map(r => r.risk)
@@ -564,23 +432,24 @@ async function analyzeRepository(content: RepositoryContent): Promise<AnalysisRe
   }
 }
 
-// Add missing utility function
-function detectScope(lines: string[], currentLine: number): string | undefined {
-  // Look up for function/class definition
-  for (let i = currentLine; i >= 0; i--) {
-    const line = lines[i];
-    if (!line) continue;
-    
-    const trimmedLine = line.trim();
-    // Match function/class/method definitions across languages
-    if (
-      trimmedLine.match(/^(def|class|function|const|let|var|async function)\s+\w+/) ||
-      trimmedLine.match(/^[public|private|protected].*\s+\w+\s*\(/) // Class methods
-    ) {
-      return trimmedLine;
+// Helper function to detect code scope
+function detectScope(lines: string[], currentLineIndex: number): string {
+  // Look backward to find function or class definition
+  for (let i = currentLineIndex; i >= 0; i--) {
+    if (/\b(function|def|class)\s+(\w+)/.test(lines[i])) {
+      const match = lines[i].match(/\b(function|def|class)\s+(\w+)/);
+      return match ? match[2] : 'Function';
     }
   }
-  return "Global";
+  return 'Global';
+}
+
+// Helper to check if a file has a vector DB component
+function hasVectorDBComponent(components: AIComponent[], filePath: string): boolean {
+  return components.some(component => 
+    component.type === 'Vector Database' && 
+    component.locations.some(loc => loc.file === filePath)
+  );
 }
 
 //  GitHub API utilities 
@@ -884,4 +753,206 @@ async function callGPT4(prompt: string): Promise<string> {
     // Fallback to Prompt Injection category if GPT-4 call fails
     return "LLM01:2025";
   }
+} 
+
+// Step 2: Completely redesign risk detection
+function detectSecurityRisks(files: RepositoryFile[], components: AIComponent[]): SecurityRisk[] {
+  // Create a map of risk types to avoid duplication
+  const riskMap = new Map<string, SecurityRisk>();
+  
+  // Initialize standard risks
+  riskMap.set("Hardcoded API Keys", {
+    risk: "Hardcoded API Keys",
+    severity: "high" as Severity,
+    description: "API keys or credentials found directly in code",
+    owaspCategory: OWASP_LLM_CATEGORIES.INSECURE_OUTPUT_HANDLING,
+    relatedComponents: [],
+    evidence: [],
+    confidence: 0.95
+  });
+  
+  riskMap.set("System Prompt Exposure", {
+    risk: "System Prompt Exposure",
+    severity: "medium" as Severity,
+    description: "System prompts found in code which could expose application logic",
+    owaspCategory: OWASP_LLM_CATEGORIES.SYSTEM_PROMPT_LEAKAGE,
+    relatedComponents: [],
+    evidence: [],
+    confidence: 0.9
+  });
+  
+  riskMap.set("Potential RAG Prompt Injection", {
+    risk: "Potential RAG Prompt Injection",
+    severity: "medium" as Severity,
+    description: "RAG implementation detected without clear input sanitization",
+    owaspCategory: OWASP_LLM_CATEGORIES.PROMPT_INJECTION,
+    relatedComponents: [],
+    evidence: [],
+    confidence: 0.8
+  });
+  
+  // Scan each file for risks
+  for (const file of files) {
+    const lines = file.content.split('\n');
+    
+    // Check for API keys
+    const apiKeyPattern = /(api[-_]?key|apikey|api-key|OPENAI_API_KEY|PINECONEAPI|OPENAIKEY)[\s]*=[\s]*["']?[A-Za-z0-9\-_]+["']?/i;
+    lines.forEach((line, index) => {
+      if (apiKeyPattern.test(line)) {
+        const risk = riskMap.get("Hardcoded API Keys")!;
+        risk.evidence.push({
+          file: file.path,
+          line: index + 1,
+          snippet: line.trim(),
+          context: {
+            before: lines.slice(Math.max(0, index - 2), index),
+            after: lines.slice(index + 1, Math.min(lines.length, index + 3)),
+            scope: detectScope(lines, index)
+          }
+        });
+      }
+    });
+    
+    // Check for RAG implementations with potential injection vulnerabilities
+    if (hasVectorDBComponent(components, file.path)) {
+      // Look for query operations that might use user input
+      const queryLines = lines
+        .map((line, idx) => ({ line, idx }))
+        .filter(({ line }) => /\.query\s*\(/.test(line) && /user|input|prompt|message/.test(line));
+        
+      if (queryLines.length > 0) {
+        const risk = riskMap.get("Potential RAG Prompt Injection")!;
+        risk.evidence.push({
+          file: file.path,
+          line: queryLines[0].idx + 1,
+          snippet: queryLines[0].line.trim(),
+          context: {
+            before: lines.slice(Math.max(0, queryLines[0].idx - 2), queryLines[0].idx),
+            after: lines.slice(queryLines[0].idx + 1, Math.min(lines.length, queryLines[0].idx + 3)),
+            scope: detectScope(lines, queryLines[0].idx)
+          }
+        });
+      }
+    }
+    
+    // Check for system prompts
+    const systemPromptPattern = /(system_prompt|system prompt|systemPrompt|SystemMessage)[\s]*=[\s]*["'`]|content=["'`]/i;
+    lines.forEach((line, index) => {
+      if (systemPromptPattern.test(line)) {
+        const risk = riskMap.get("System Prompt Exposure")!;
+        risk.evidence.push({
+          file: file.path,
+          line: index + 1,
+          snippet: line.trim(),
+          context: {
+            before: lines.slice(Math.max(0, index - 2), index),
+            after: lines.slice(index + 1, Math.min(lines.length, index + 3)),
+            scope: detectScope(lines, index)
+          }
+        });
+      }
+    });
+  }
+  
+  // Filter out risks with no evidence
+  return Array.from(riskMap.values()).filter(risk => risk.evidence.length > 0);
+} 
+
+// Step 1: Completely redesign how we detect AI components
+function detectAIComponents(files: RepositoryFile[]): AIComponent[] {
+  // Track unique components by name to avoid duplication
+  const componentMap = new Map<string, AIComponent>();
+  
+  for (const file of files) {
+    const lines = file.content.split('\n');
+    
+    // Check for imports - use regex to extract the actual package name
+    const importMatches = [...file.content.matchAll(/import\s+(?:{\s*[^}]*\s*}|[^;]+)\s+from\s+['"]([^'"]+)['"]/g)];
+    
+    for (const match of importMatches) {
+      const packageName = match[1];
+      let componentType = '';
+      
+      // Categorize the import
+      if (/langchain|llm-chain/.test(packageName)) {
+        componentType = 'LLM Framework';
+      } else if (/openai|anthropic|cohere|huggingface|google-generative/.test(packageName)) {
+        componentType = 'LLM Provider';
+      } else if (/pinecone|chroma|qdrant|weaviate|milvus/.test(packageName)) {
+        componentType = 'Vector Database';
+      } else if (/sentence-transformers|embedding/.test(packageName)) {
+        componentType = 'Embedding Model';
+      } else {
+        // Skip non-AI packages
+        continue;
+      }
+      
+      // Get the line number and context
+      const lineIndex = lines.findIndex(line => line.includes(packageName));
+      
+      // Create or update component
+      const componentName = packageName.split('/').pop() || packageName;
+      if (!componentMap.has(componentName)) {
+        componentMap.set(componentName, {
+          name: componentName,
+          type: componentType,
+          confidence: 0.95,
+          detectionMethod: 'import',
+          locations: []
+        });
+      }
+      
+      // Add this location
+      componentMap.get(componentName)!.locations.push({
+        file: file.path,
+        line: lineIndex + 1,
+        snippet: lines[lineIndex],
+        context: {
+          before: lines.slice(Math.max(0, lineIndex - 2), lineIndex),
+          after: lines.slice(lineIndex + 1, Math.min(lines.length, lineIndex + 3)),
+          scope: 'Global'
+        }
+      });
+    }
+    
+    // Also check for actual usage patterns (not just imports)
+    // This would detect instantiations like "new PineconeClient()" or "ChatOpenAI()"
+    const usagePatterns = [
+      { pattern: /new\s+Pinecone\(|Pinecone\(/, type: 'Vector Database', name: 'pinecone' },
+      { pattern: /ChatOpenAI\(/, type: 'LLM Provider', name: 'openai' },
+      { pattern: /ChatAnthropic\(/, type: 'LLM Provider', name: 'anthropic' },
+      { pattern: /ChatGoogleGenerativeAI\(/, type: 'LLM Provider', name: 'google-ai' }
+    ];
+    
+    for (const { pattern, type, name } of usagePatterns) {
+      if (pattern.test(file.content)) {
+        // Find the line
+        const lineIndex = lines.findIndex(line => pattern.test(line));
+        if (lineIndex >= 0) {
+          if (!componentMap.has(name)) {
+            componentMap.set(name, {
+              name,
+              type,
+              confidence: 0.9,
+              detectionMethod: 'usage',
+              locations: []
+            });
+          }
+          
+          componentMap.get(name)!.locations.push({
+            file: file.path,
+            line: lineIndex + 1,
+            snippet: lines[lineIndex],
+            context: {
+              before: lines.slice(Math.max(0, lineIndex - 2), lineIndex),
+              after: lines.slice(lineIndex + 1, Math.min(lines.length, lineIndex + 3)),
+              scope: detectScope(lines, lineIndex)
+            }
+          });
+        }
+      }
+    }
+  }
+  
+  return Array.from(componentMap.values());
 } 
