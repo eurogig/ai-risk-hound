@@ -1,4 +1,4 @@
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ShieldAlert, AlertTriangle, Info } from "lucide-react";
 import { 
@@ -120,160 +120,142 @@ const SecurityRisksCard = ({
     console.log("Prompt definition references:", promptRefs.length);
   }
   
-  // Group risks by OWASP category for better organization
-  const risksByOwaspCategory = validSecurityRisks.reduce((acc, risk) => {
-    if (risk.owasp_category?.id) {
-      const categoryId = risk.owasp_category.id;
-      if (!acc[categoryId]) {
-        acc[categoryId] = [];
-      }
-      acc[categoryId].push(risk);
-    } else {
-      // Handle risks without OWASP category
-      if (!acc['uncategorized']) {
-        acc['uncategorized'] = [];
-      }
-      acc['uncategorized'].push(risk);
+  // Group risks by OWASP category
+  const risksByCategory = risks.reduce((acc, risk) => {
+    const category = risk.owaspCategory.id;
+    if (!acc[category]) {
+      acc[category] = [];
     }
+    acc[category].push(risk);
     return acc;
   }, {} as Record<string, SecurityRisk[]>);
   
   console.log("Valid security risks count after deduplication:", validSecurityRisks.length);
-  console.log("Risks grouped by OWASP category:", Object.keys(risksByOwaspCategory));
+  console.log("Risks grouped by OWASP category:", Object.keys(risksByCategory));
   
   return (
     <Card>
-      <CardHeader className="pb-2">
-        <CardTitle className="text-xl flex items-center gap-2">
-          <ShieldAlert className="h-5 w-5 text-red-500" />
-          Security Risks
-        </CardTitle>
+      <CardHeader>
+        <CardTitle>Security Analysis</CardTitle>
+        <CardDescription>
+          Grouped by OWASP LLM Top 10 Categories
+        </CardDescription>
       </CardHeader>
       <CardContent>
-        {validSecurityRisks.length > 0 ? (
-          <Accordion type="single" collapsible className="w-full">
-            {validSecurityRisks.map((risk, index) => {
-              // Get the risk name from either field
-              const riskName = risk.risk || risk.risk_name || "Unknown Risk";
-              
-              // Get code references related to this specific risk using the IDs
-              const relatedReferences = getRelatedCodeReferences(risk, verifiedCodeReferences);
-              // Get AI components potentially related to this risk
-              const relatedComponents = getRelatedAIComponents(risk, aiComponents);
-              
-              return (
-                <AccordionItem key={index} value={`risk-${index}`}>
-                  <AccordionTrigger className="hover:no-underline py-3">
-                    <div className="flex items-center justify-between w-full pr-4">
-                      <span className="font-medium text-left">{riskName}</span>
-                      <div className="flex items-center space-x-2">
+        {Object.entries(risksByCategory).map(([category, categoryRisks]) => (
+          <div key={category} className="mb-6">
+            <h3 className="text-lg font-semibold flex items-center gap-2">
+              <ShieldAlert className="h-5 w-5" />
+              {OWASP_LLM_CATEGORIES[category].name}
+            </h3>
+            <p className="text-sm text-gray-500 mb-2">
+              {OWASP_LLM_CATEGORIES[category].description}
+            </p>
+            <Accordion type="single" collapsible>
+              {categoryRisks.map((risk, idx) => {
+                // Get the risk name from either field
+                const riskName = risk.risk || risk.risk_name || "Unknown Risk";
+                
+                // Get code references related to this specific risk using the IDs
+                const relatedReferences = getRelatedCodeReferences(risk, verifiedCodeReferences);
+                // Get AI components potentially related to this risk
+                const relatedComponents = getRelatedAIComponents(risk, aiComponents);
+                
+                return (
+                  <AccordionItem key={idx} value={`risk-${idx}`}>
+                    <AccordionTrigger className="hover:no-underline py-3">
+                      <div className="flex items-center justify-between w-full pr-4">
+                        <span className="font-medium text-left">{riskName}</span>
+                        <div className="flex items-center space-x-2">
+                          {risk.owasp_category && (
+                            <TooltipProvider>
+                              <Tooltip>
+                                <TooltipTrigger>
+                                  <Badge className={`${getOwaspBadgeColor(risk.owasp_category.id)} flex items-center`}>
+                                    <ShieldAlert className="h-3 w-3 mr-1" /> 
+                                    {risk.owasp_category.id}
+                                  </Badge>
+                                </TooltipTrigger>
+                                <TooltipContent side="left" className="max-w-sm">
+                                  <div className="max-w-xs">
+                                    <p className="font-bold">{risk.owasp_category.name}</p>
+                                    <p className="text-xs">{risk.owasp_category.description}</p>
+                                  </div>
+                                </TooltipContent>
+                              </Tooltip>
+                            </TooltipProvider>
+                          )}
+                          <Badge className={`${getSeverityColor(risk.severity)}`}>
+                            {risk.severity}
+                          </Badge>
+                        </div>
+                      </div>
+                    </AccordionTrigger>
+                    <AccordionContent>
+                      <div className="space-y-4 pt-2">
+                        <p className="text-gray-600">{risk.description}</p>
+                        
+                        {/* OWASP Category Information */}
                         {risk.owasp_category && (
-                          <TooltipProvider>
-                            <Tooltip>
-                              <TooltipTrigger>
-                                <Badge className={`${getOwaspBadgeColor(risk.owasp_category.id)} flex items-center`}>
-                                  <ShieldAlert className="h-3 w-3 mr-1" /> 
-                                  {risk.owasp_category.id}
-                                </Badge>
-                              </TooltipTrigger>
-                              <TooltipContent side="left" className="max-w-sm">
-                                <div className="max-w-xs">
-                                  <p className="font-bold">{risk.owasp_category.name}</p>
-                                  <p className="text-xs">{risk.owasp_category.description}</p>
+                          <div className="bg-gray-50 p-3 rounded-md border border-gray-200 text-sm space-y-1">
+                            <div className="flex items-center gap-2">
+                              <ShieldAlert className="h-4 w-4 text-gray-700" />
+                              <h4 className="font-semibold">OWASP LLM Top 10 Classification:</h4>
+                            </div>
+                            <div className="pl-6">
+                              <p className="font-medium">{risk.owasp_category.id}: {risk.owasp_category.name}</p>
+                              <p className="text-gray-600 text-sm">{risk.owasp_category.description}</p>
+                            </div>
+                          </div>
+                        )}
+                        
+                        {/* Related AI Components Section */}
+                        {relatedComponents.length > 0 && (
+                          <div className="mt-4">
+                            <h4 className="text-sm font-medium text-gray-700 mb-2">Related AI Components:</h4>
+                            <div className="space-y-2">
+                              {relatedComponents.map((component, compIndex) => (
+                                <div key={compIndex} className="p-2 bg-gray-50 rounded border border-gray-100 text-sm">
+                                  <div className="font-medium">{component.name}</div>
+                                  <div className="text-xs text-gray-500">{component.type}</div>
                                 </div>
-                              </TooltipContent>
-                            </Tooltip>
-                          </TooltipProvider>
+                              ))}
+                            </div>
+                          </div>
                         )}
-                        <Badge className={`${getSeverityColor(risk.severity)}`}>
-                          {risk.severity}
-                        </Badge>
-                      </div>
-                    </div>
-                  </AccordionTrigger>
-                  <AccordionContent>
-                    <div className="space-y-4 pt-2">
-                      <p className="text-gray-600">{risk.description}</p>
-                      
-                      {/* OWASP Category Information */}
-                      {risk.owasp_category && (
-                        <div className="bg-gray-50 p-3 rounded-md border border-gray-200 text-sm space-y-1">
-                          <div className="flex items-center gap-2">
-                            <ShieldAlert className="h-4 w-4 text-gray-700" />
-                            <h4 className="font-semibold">OWASP LLM Top 10 Classification:</h4>
-                          </div>
-                          <div className="pl-6">
-                            <p className="font-medium">{risk.owasp_category.id}: {risk.owasp_category.name}</p>
-                            <p className="text-gray-600 text-sm">{risk.owasp_category.description}</p>
-                          </div>
-                        </div>
-                      )}
-                      
-                      {/* Related AI Components Section */}
-                      {relatedComponents.length > 0 && (
+                        
+                        {/* Code Evidence for this risk */}
                         <div className="mt-4">
-                          <h4 className="text-sm font-medium text-gray-700 mb-2">Related AI Components:</h4>
-                          <div className="space-y-2">
-                            {relatedComponents.map((component, compIndex) => (
-                              <div key={compIndex} className="p-2 bg-gray-50 rounded border border-gray-100 text-sm">
-                                <div className="font-medium">{component.name}</div>
-                                <div className="text-xs text-gray-500">{component.type}</div>
-                              </div>
-                            ))}
+                          <h4 className="text-sm font-medium text-gray-700 mb-2">Evidence in Code:</h4>
+                          {relatedReferences.length > 0 ? (
+                            <CodeReferencesList 
+                              references={relatedReferences} 
+                              riskIndex={idx} 
+                            />
+                          ) : (
+                            <div className="text-sm text-gray-500 italic flex items-center gap-2 p-2 bg-gray-50 rounded border border-gray-100">
+                              <Info className="h-4 w-4 text-blue-500" />
+                              <p>No specific code references linked to this risk.</p>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Impact Rating */}
+                        <div className="mt-4 p-3 bg-gray-50 rounded-md border border-gray-200">
+                          <h4 className="text-sm font-medium text-gray-700 mb-1">Impact Assessment</h4>
+                          <div className="flex items-center gap-2">
+                            <AlertTriangle className={`h-4 w-4 ${getSeverityIconColor(risk.severity)}`} />
+                            <span className="text-sm font-medium">{getSeverityDescription(risk.severity)}</span>
                           </div>
                         </div>
-                      )}
-                      
-                      {/* Code Evidence for this risk */}
-                      <div className="mt-4">
-                        <h4 className="text-sm font-medium text-gray-700 mb-2">Evidence in Code:</h4>
-                        {relatedReferences.length > 0 ? (
-                          <CodeReferencesList 
-                            references={relatedReferences} 
-                            riskIndex={index} 
-                          />
-                        ) : (
-                          <div className="text-sm text-gray-500 italic flex items-center gap-2 p-2 bg-gray-50 rounded border border-gray-100">
-                            <Info className="h-4 w-4 text-blue-500" />
-                            <p>No specific code references linked to this risk.</p>
-                          </div>
-                        )}
                       </div>
-
-                      {/* Impact Rating */}
-                      <div className="mt-4 p-3 bg-gray-50 rounded-md border border-gray-200">
-                        <h4 className="text-sm font-medium text-gray-700 mb-1">Impact Assessment</h4>
-                        <div className="flex items-center gap-2">
-                          <AlertTriangle className={`h-4 w-4 ${getSeverityIconColor(risk.severity)}`} />
-                          <span className="text-sm font-medium">{getSeverityDescription(risk.severity)}</span>
-                        </div>
-                      </div>
-                    </div>
-                  </AccordionContent>
-                </AccordionItem>
-              );
-            })}
-          </Accordion>
-        ) : (
-          <div className="p-4 text-center text-gray-500">
-            No security risks detected in this repository.
+                    </AccordionContent>
+                  </AccordionItem>
+                );
+              })}
+            </Accordion>
           </div>
-        )}
-
-        {/* OWASP Reference Note */}
-        <div className="mt-6 p-3 rounded-md bg-blue-50 border border-blue-100">
-          <div className="flex items-start gap-2">
-            <ShieldAlert className="h-4 w-4 text-blue-500 mt-0.5" />
-            <div>
-              <h4 className="text-sm font-medium text-blue-700">About OWASP LLM Top 10</h4>
-              <p className="text-xs text-blue-600 mt-1">
-                Security risks are categorized according to the OWASP LLM Top 10, a standard awareness document for 
-                developers and web application security. It represents a broad consensus about the most critical 
-                security risks to LLM applications.
-              </p>
-            </div>
-          </div>
-        </div>
+        ))}
       </CardContent>
     </Card>
   );

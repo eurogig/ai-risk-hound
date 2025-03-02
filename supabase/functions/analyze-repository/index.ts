@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.4.0"
+import { Configuration, OpenAIApi } from "https://esm.sh/openai@3.3.0"
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -406,56 +407,56 @@ async function analyzeRepository(content: RepositoryContent): Promise<AnalysisRe
       const imports = detectedImports.get(file.path)!;
       const lines = file.content.split('\n');
 
-      lines.forEach((line, lineIndex) => {
-        // Check for model usage
-        for (const [modelType, pattern] of Object.entries(AI_PATTERNS.models)) {
-          if (pattern.test(line)) {
-            // Add to risks if we find direct model usage
-            securityRisks.push({
-              risk: "Direct Model Usage",
-              severity: "high",
-              description: `Direct usage of ${modelType} model detected`,
-              owaspCategory: OWASP_LLM_CATEGORIES.PROMPT_INJECTION,
-              relatedComponents: Array.from(imports),
-              evidence: [{
-                file: file.path,
-                line: lineIndex + 1,
-                snippet: line.trim(),
-                context: {
-                  before: lines.slice(Math.max(0, lineIndex - 2), lineIndex),
-                  after: lines.slice(lineIndex + 1, lineIndex + 3),
-                  scope: detectScope(lines, lineIndex)
-                }
-              }],
-              confidence: 0.95
-            });
-          }
-        }
+      // Collect context for risk categorization
+      const context = {
+        hasRag: imports.has('vectordb') || lines.some(l => l.includes('pinecone') || l.includes('chromadb')),
+        hasEmbeddings: lines.some(l => l.includes('embedding') || l.includes('encode')),
+        hasSystemPrompt: lines.some(l => 
+          AI_PATTERNS.systemPrompts.general.test(l) ||
+          AI_PATTERNS.systemPrompts.openai.test(l) ||
+          AI_PATTERNS.systemPrompts.anthropic.test(l)
+        ),
+        hasVectorDB: imports.has('vectordb'),
+        directModelUsage: lines.some(l => 
+          AI_PATTERNS.models.gpt.test(l) || 
+          AI_PATTERNS.models.claude.test(l)
+        ),
+        modelType: 'gpt' // Default, could be more specific
+      };
 
-        // Check for system prompts
-        for (const [promptType, pattern] of Object.entries(AI_PATTERNS.systemPrompts)) {
-          if (pattern.test(line)) {
-            securityRisks.push({
-              risk: "System Prompt Exposure",
-              severity: "medium",
-              description: "Hardcoded system prompts detected",
-              owaspCategory: OWASP_LLM_CATEGORIES.SYSTEM_PROMPT_LEAKAGE,
-              relatedComponents: Array.from(imports),
-              evidence: [{
-                file: file.path,
-                line: lineIndex + 1,
-                snippet: line.trim(),
-                context: {
-                  before: lines.slice(Math.max(0, lineIndex - 2), lineIndex),
-                  after: lines.slice(lineIndex + 1, lineIndex + 3),
-                  scope: detectScope(lines, lineIndex)
-                }
-              }],
-              confidence: 0.85
-            });
-          }
-        }
-      });
+      // Get the appropriate OWASP category
+      const owaspCategory = categorizeRisk(context);
+
+      if (context.hasSystemPrompt) {
+        securityRisks.push({
+          risk: "System Prompt Exposure",
+          severity: "high",
+          description: "Hardcoded system prompts detected which could expose internal logic",
+          owaspCategory,  // Now using the categorized risk
+          relatedComponents: Array.from(imports),
+          evidence: [{
+            file: file.path,
+            line: lines.findIndex(l => 
+              AI_PATTERNS.systemPrompts.general.test(l) || 
+              AI_PATTERNS.systemPrompts.openai.test(l) || 
+              AI_PATTERNS.systemPrompts.anthropic.test(l)
+            ) + 1,
+            snippet: lines.find(l => 
+              AI_PATTERNS.systemPrompts.general.test(l) || 
+              AI_PATTERNS.systemPrompts.openai.test(l) || 
+              AI_PATTERNS.systemPrompts.anthropic.test(l)
+            )?.trim() || '',
+            context: {
+              before: [],
+              after: [],
+              scope: 'Global'
+            }
+          }],
+          confidence: 0.95
+        });
+      }
+
+      // Add other risk checks here...
     }
 
     console.log('Analysis complete. Found:');
@@ -686,3 +687,126 @@ async function fetchRepositoryContent(url: string): Promise<RepositoryContent> {
   }
 }
 */ 
+
+function categorizeRisk(context: {
+  hasRag: boolean;
+  hasEmbeddings: boolean;
+  hasSystemPrompt: boolean;
+  hasVectorDB: boolean;
+  directModelUsage: boolean;
+  modelType: string;
+}): typeof OWASP_LLM_CATEGORIES[keyof typeof OWASP_LLM_CATEGORIES] {
+
+  // LLM02: Sensitive Information Disclosure
+  if (context.hasRag && context.hasVectorDB) {
+    return OWASP_LLM_CATEGORIES.SENSITIVE_INFORMATION_DISCLOSURE;
+  }
+
+  // LLM04: Data and Model Poisoning
+  if (context.hasEmbeddings) {
+    return OWASP_LLM_CATEGORIES.DATA_AND_MODEL_POISONING;
+  }
+
+  // LLM07: System Prompt Leakage
+  if (context.hasSystemPrompt) {
+    return OWASP_LLM_CATEGORIES.SYSTEM_PROMPT_LEAKAGE;
+  }
+
+  // LLM08: Vector/Embedding Weaknesses
+  if (context.hasVectorDB) {
+    return OWASP_LLM_CATEGORIES.VECTOR_AND_EMBEDDING_WEAKNESSES;
+  }
+
+  // LLM01: Prompt Injection (default for direct model usage)
+  if (context.directModelUsage) {
+    return OWASP_LLM_CATEGORIES.PROMPT_INJECTION;
+  }
+
+  // Default fallback
+  return OWASP_LLM_CATEGORIES.PROMPT_INJECTION;
+} 
+
+// Add to the types section
+type RiskContext = {
+  code: string;
+  imports: string[];
+  modelUsage: string[];
+  systemPrompts: string[];
+  vectorStores: string[];
+  embeddings: string[];
+  packageDependencies: string[];
+};
+
+async function analyzeSecurityRisk(risk: SecurityRisk, context: RiskContext): Promise<typeof OWASP_LLM_CATEGORIES[keyof typeof OWASP_LLM_CATEGORIES]> {
+  const prompt = `
+As a security expert, analyze this AI security risk and categorize it according to the OWASP LLM Top 10 2025.
+Consider all context carefully.
+
+Risk: ${risk.risk}
+Description: ${risk.description}
+Severity: ${risk.severity}
+
+Context:
+- Imports: ${context.imports.join(', ')}
+- Model Usage: ${context.modelUsage.join(', ')}
+- System Prompts Found: ${context.systemPrompts.join(', ')}
+- Vector Stores: ${context.vectorStores.join(', ')}
+- Embeddings: ${context.embeddings.join(', ')}
+- Dependencies: ${context.packageDependencies.join(', ')}
+
+Code Evidence:
+${risk.evidence.map(e => `${e.file}:${e.line} - ${e.snippet}`).join('\n')}
+
+OWASP LLM Categories:
+${Object.entries(OWASP_LLM_CATEGORIES).map(([key, cat]) => 
+  `${cat.id}: ${cat.name} - ${cat.description}`
+).join('\n')}
+
+Return only the category ID that best matches this risk.
+`;
+
+  // Call GPT-4 for analysis
+  const category = await callGPT4(prompt);
+  
+  // Map the response back to our categories
+  const matchedCategory = Object.values(OWASP_LLM_CATEGORIES)
+    .find(cat => cat.id === category.trim());
+
+  return matchedCategory || OWASP_LLM_CATEGORIES.PROMPT_INJECTION;
+} 
+
+async function callGPT4(prompt: string): Promise<string> {
+  const openaiApiKey = Deno.env.get('OPENAI_API_KEY');
+  if (!openaiApiKey) {
+    throw new Error('OpenAI API key not configured');
+  }
+
+  const configuration = new Configuration({ apiKey: openaiApiKey });
+  const openai = new OpenAIApi(configuration);
+
+  try {
+    const response = await openai.createChatCompletion({
+      model: "gpt-4",
+      messages: [
+        {
+          role: "system",
+          content: "You are a security expert specializing in LLM applications. Analyze risks and categorize them according to OWASP LLM Top 10 2025. Respond only with the category ID."
+        },
+        {
+          role: "user",
+          content: prompt
+        }
+      ],
+      temperature: 0.1, // Low temperature for consistent categorization
+      max_tokens: 10   // We only need the category ID
+    });
+
+    const category = response.data.choices[0]?.message?.content?.trim() || "LLM01:2025";
+    console.log('GPT-4 categorized risk as:', category);
+    return category;
+  } catch (error) {
+    console.error('Error calling GPT-4:', error);
+    // Fallback to Prompt Injection category if GPT-4 call fails
+    return "LLM01:2025";
+  }
+} 
