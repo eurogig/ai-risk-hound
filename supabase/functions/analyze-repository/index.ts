@@ -401,8 +401,6 @@ async function analyzeRepository(content: RepositoryContent): Promise<AnalysisRe
 
     // Step 4: Security risk analysis
     console.log('Analyzing security risks...');
-    const securityRisks: SecurityRisk[] = [];
-    
     // Initialize the risk registry at the beginning of the analyze function
     const riskRegistry = {
       "Hardcoded API Keys": {
