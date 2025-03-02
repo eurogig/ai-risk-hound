@@ -332,51 +332,42 @@ async function analyzeRepository(files: RepositoryFile[]): Promise<AnalysisResul
   try {
     console.log('Starting repository analysis...');
     
-    // Step 1: Identify dependencies from package files
+    // Direct implementation (no need for analyzeRepositoryComponents)
     const dependencies = extractDependencies(files);
-    
-    // Step 2: Track imports and their aliases across files
     const imports = trackImports(files, dependencies);
-    
-    // Step 3: Find actual usage of these imports
     const components = findComponentUsage(files, imports);
-    
-    // Step 4: Identify risks based on component usage patterns
     const risks = identifyRisks(files, components, imports);
-
-    console.log('Analysis complete. Found:');
-    console.log(`- ${components.length} AI components`);
-    console.log(`- ${risks.length} security risks`);
-
+    
+    // Build the call graph
+    const callGraph = buildCallGraph(files, components);
+    
+    // Calculate summary statistics
+    const summary = {
+      totalAIUsage: components.length,
+      risksByLevel: {
+        high: risks.filter(r => r.severity === 'high').length,
+        medium: risks.filter(r => r.severity === 'medium').length,
+        low: risks.filter(r => r.severity === 'low').length
+      },
+      topRisks: risks.slice(0, 3).map(r => r.risk)
+    };
+    
+    // Get repository name from the first file path or use a default
+    const repositoryName = files.length > 0 ? 
+      files[0].path.split('/')[0] || 'unknown-repository' : 
+      'unknown-repository';
+    
     return {
-      repositoryName: repositoryContent.repositoryName,
+      repositoryName,
       timestamp: new Date().toISOString(),
       aiComponents: components,
       securityRisks: risks,
-      callGraph: {
-        nodes: components.map(c => c.name),
-        edges: Array.from(imports.entries()).map(([from, to]) => ({
-          from,
-          to: to.values().next().value,
-          type: 'import'
-        }))
-      },
-      summary: {
-        totalAIUsage: components.length,
-        risksByLevel: {
-          high: risks.filter(r => r.severity === 'high').length,
-          medium: risks.filter(r => r.severity === 'medium').length,
-          low: risks.filter(r => r.severity === 'low').length
-        },
-        topRisks: risks
-          .sort((a, b) => b.confidence - a.confidence)
-          .slice(0, 3)
-          .map(r => r.risk)
-      }
+      callGraph,
+      summary
     };
   } catch (error) {
-    console.error('Error in analyzeRepository:', error);
-    throw error; // Let the outer try-catch handle it
+    console.error('Error in repository analysis:', error);
+    throw error;
   }
 }
 
@@ -704,26 +695,6 @@ async function callGPT4(prompt: string): Promise<string> {
     return "LLM01:2025";
   }
 } 
-
-// Completely redesigned component and risk detection system
-function analyzeRepository(files: RepositoryFile[]): {
-  components: AIComponent[],
-  risks: SecurityRisk[]
-} {
-  // Step 1: Identify dependencies from package files
-  const dependencies = extractDependencies(files);
-  
-  // Step 2: Track imports and their aliases across files
-  const imports = trackImports(files, dependencies);
-  
-  // Step 3: Find actual usage of these imports
-  const components = findComponentUsage(files, imports);
-  
-  // Step 4: Identify risks based on component usage patterns
-  const risks = identifyRisks(files, components, imports);
-  
-  return { components, risks };
-}
 
 function extractDependencies(files: RepositoryFile[]): Map<string, string[]> {
   const dependencyMap = new Map<string, string[]>();
@@ -1076,4 +1047,36 @@ function identifyRisks(files: RepositoryFile[], components: AIComponent[], impor
   }
   
   return risks;
+} 
+
+// Add the missing buildCallGraph function
+function buildCallGraph(files: RepositoryFile[], components: AIComponent[]) {
+  // Create nodes from components and files
+  const nodes = Array.from(new Set([
+    ...components.map(c => c.name),
+    ...files.map(f => f.path.split('/').pop() || f.path)
+      .filter(name => name.match(/\.(js|ts|py|jsx|tsx)$/))
+  ]));
+  
+  // Create edges based on imports and component usage
+  const edges: Array<{from: string, to: string, type: string}> = [];
+  
+  // Add edges between components that are used together
+  for (const component of components) {
+    for (const location of component.locations) {
+      const file = location.file.split('/').pop() || location.file;
+      if (!nodes.includes(file)) continue;
+      
+      edges.push({
+        from: file,
+        to: component.name,
+        type: 'uses'
+      });
+    }
+  }
+  
+  return {
+    nodes,
+    edges
+  };
 } 
