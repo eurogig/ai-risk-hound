@@ -274,7 +274,7 @@ serve(async (req) => {
 
     // Fetch and analyze repository
     const repositoryContent = await fetchRepositoryContent(repositoryUrl);
-    const result = await analyzeRepository(repositoryContent);
+    const result = await analyzeRepository(repositoryContent.files);
 
     // Store in repository_analyses table
     const supabase = createClient(
@@ -328,99 +328,47 @@ type CallGraph = {
 };
 
 // Main analysis function (to be implemented next)
-async function analyzeRepository(content: RepositoryContent): Promise<AnalysisResult> {
+async function analyzeRepository(files: RepositoryFile[]): Promise<AnalysisResult> {
   try {
     console.log('Starting repository analysis...');
     
-    // Step 1: Detect AI components
-    console.log('Detecting AI components...');
-    const aiComponents = detectAIComponents(content.files);
-    console.log('AI components found:', aiComponents);
+    // Step 1: Identify dependencies from package files
+    const dependencies = extractDependencies(files);
     
-    // Step 2: Initialize tracking
-    const detectedLibraries = new Set(aiComponents.map(c => c.name));
-    console.log('Detected libraries:', Array.from(detectedLibraries));
+    // Step 2: Track imports and their aliases across files
+    const imports = trackImports(files, dependencies);
     
-    const callGraph: CallGraph = {
-      nodes: [],
-      edges: []
-    };
-
-    // Step 3: Scan for AI components
-    console.log('Scanning for AI components...');
-    const detectedImports = new Map<string, Set<string>>();
-
-    for (const file of content.files) {
-      console.log(`Analyzing file: ${file.path}`);
-      // Skip non-code files
-      if (!['.py', '.js', '.ts', '.jsx', '.tsx'].includes(file.extension)) {
-        continue;
-      }
-
-      const lines = file.content.split('\n');
-      
-      // Track imports and build graph
-      lines.forEach((line, lineIndex) => {
-        // Check for imports
-        for (const [library, pattern] of Object.entries(AI_PATTERNS.imports)) {
-          if (pattern.test(line)) {
-            console.log(`Found AI library: ${library} in file: ${file.path}`);
-            // Add to graph
-            if (!callGraph.nodes.includes(file.path)) {
-              callGraph.nodes.push(file.path);
-            }
-            
-            // Record the import
-            if (!detectedImports.has(file.path)) {
-              detectedImports.set(file.path, new Set());
-            }
-            detectedImports.get(file.path)?.add(library);
-
-            // Add component with high confidence due to direct import
-            aiComponents.push({
-              name: library,
-              type: 'Library',
-              confidence: 0.9,
-              detectionMethod: 'import',
-              locations: [{
-                file: file.path,
-                line: lineIndex + 1,
-                snippet: line.trim(),
-                context: {
-                  before: lines.slice(Math.max(0, lineIndex - 2), lineIndex),
-                  after: lines.slice(lineIndex + 1, lineIndex + 3),
-                  scope: detectScope(lines, lineIndex)
-                }
-              }]
-            });
-          }
-        }
-      });
-    }
-
-    // Step 4: Security risk analysis
-    console.log('Analyzing security risks...');
-    const securityRisks = detectSecurityRisks(content.files, aiComponents);
+    // Step 3: Find actual usage of these imports
+    const components = findComponentUsage(files, imports);
+    
+    // Step 4: Identify risks based on component usage patterns
+    const risks = identifyRisks(files, components, imports);
 
     console.log('Analysis complete. Found:');
-    console.log(`- ${aiComponents.length} AI components`);
-    console.log(`- ${securityRisks.length} security risks`);
-    console.log(`- ${callGraph.nodes.length} files in call graph`);
+    console.log(`- ${components.length} AI components`);
+    console.log(`- ${risks.length} security risks`);
 
     return {
-      repositoryName: content.repositoryName,
+      repositoryName: repositoryContent.repositoryName,
       timestamp: new Date().toISOString(),
-      aiComponents,
-      securityRisks,
-      callGraph,
+      aiComponents: components,
+      securityRisks: risks,
+      callGraph: {
+        nodes: components.map(c => c.name),
+        edges: Array.from(imports.entries()).map(([from, to]) => ({
+          from,
+          to: to.values().next().value,
+          type: 'import'
+        }))
+      },
       summary: {
-        totalAIUsage: aiComponents.length,
+        totalAIUsage: components.length,
         risksByLevel: {
-          high: securityRisks.filter(r => r.severity === 'high').length,
-          medium: securityRisks.filter(r => r.severity === 'medium').length,
-          low: securityRisks.filter(r => r.severity === 'low').length
+          high: risks.filter(r => r.severity === 'high').length,
+          medium: risks.filter(r => r.severity === 'medium').length,
+          low: risks.filter(r => r.severity === 'low').length
         },
-        topRisks: securityRisks
+        topRisks: risks
           .sort((a, b) => b.confidence - a.confidence)
           .slice(0, 3)
           .map(r => r.risk)
@@ -432,16 +380,18 @@ async function analyzeRepository(content: RepositoryContent): Promise<AnalysisRe
   }
 }
 
-// Helper function to detect code scope
-function detectScope(lines: string[], currentLineIndex: number): string {
-  // Look backward to find function or class definition
-  for (let i = currentLineIndex; i >= 0; i--) {
-    if (/\b(function|def|class)\s+(\w+)/.test(lines[i])) {
-      const match = lines[i].match(/\b(function|def|class)\s+(\w+)/);
-      return match ? match[2] : 'Function';
+// Add the missing detectScope function
+function detectScope(lines: string[], lineIndex: number): string {
+  // Simple scope detection - look for function or class definitions above the current line
+  for (let i = lineIndex; i >= 0; i--) {
+    const line = lines[i];
+    // Match function definitions in various languages
+    if (/^\s*(function|def|class|const\s+\w+\s*=\s*\(|async\s+function)\s+(\w+)/.test(line)) {
+      const match = line.match(/^\s*(function|def|class|const\s+\w+\s*=\s*\(|async\s+function)\s+(\w+)/);
+      return match ? match[2] : "Unknown";
     }
   }
-  return 'Global';
+  return "Global";
 }
 
 // Helper to check if a file has a vector DB component
@@ -755,219 +705,212 @@ async function callGPT4(prompt: string): Promise<string> {
   }
 } 
 
-// Completely redesign how we detect and display AI components
-function detectAIComponents(files: RepositoryFile[]): AIComponent[] {
-  // Track unique components by name to avoid duplication
-  const componentMap = new Map<string, AIComponent>();
+// Completely redesigned component and risk detection system
+function analyzeRepository(files: RepositoryFile[]): {
+  components: AIComponent[],
+  risks: SecurityRisk[]
+} {
+  // Step 1: Identify dependencies from package files
+  const dependencies = extractDependencies(files);
   
-  // Track which files have been processed for vector DB references
-  const processedVectorDBFiles = new Set<string>();
+  // Step 2: Track imports and their aliases across files
+  const imports = trackImports(files, dependencies);
   
-  // Define component categories for better organization
-  const componentCategories = {
-    LLM_PROVIDERS: ['openai', 'anthropic', 'cohere', 'google-ai', 'claude'],
-    VECTOR_DBS: ['pinecone', 'chroma', 'qdrant', 'weaviate', 'milvus'],
-    FRAMEWORKS: ['langchain', 'llama-index', 'haystack', 'semantic-kernel'],
-    EMBEDDING_MODELS: ['sentence-transformers', 'huggingface']
+  // Step 3: Find actual usage of these imports
+  const components = findComponentUsage(files, imports);
+  
+  // Step 4: Identify risks based on component usage patterns
+  const risks = identifyRisks(files, components, imports);
+  
+  return { components, risks };
+}
+
+function extractDependencies(files: RepositoryFile[]): Map<string, string[]> {
+  const dependencyMap = new Map<string, string[]>();
+  
+  // Known mappings between package names and import names
+  const packageToImportMap: Record<string, string[]> = {
+    'pinecone-client': ['pinecone'],
+    'langchain': ['langchain'],
+    'openai': ['openai'],
+    'anthropic': ['anthropic'],
+    '@google/generative-ai': ['google-generative-ai', 'googleGenerativeAI'],
+    // Add more mappings as needed
   };
   
-  // Helper function to categorize a component
-  function categorizeComponent(name: string): string {
-    if (componentCategories.LLM_PROVIDERS.some(p => name.includes(p))) return 'LLM Provider';
-    if (componentCategories.VECTOR_DBS.some(p => name.includes(p))) return 'Vector Database';
-    if (componentCategories.FRAMEWORKS.some(p => name.includes(p))) return 'LLM Framework';
-    if (componentCategories.EMBEDDING_MODELS.some(p => name.includes(p))) return 'Embedding Model';
-    return 'Library';
-  }
-  
-  // Process each file
+  // Check package.json, requirements.txt, etc.
   for (const file of files) {
-    // Skip non-code files or test files
-    if (file.path.includes('test/') || !file.content) continue;
-    
-    const lines = file.content.split('\n');
-    
-    // First pass: detect imports
-    const importMatches = [...file.content.matchAll(/import\s+(?:{\s*[^}]*\s*}|[^;]+)\s+from\s+['"]([^'"]+)['"]/g)];
-    
-    for (const match of importMatches) {
-      const packageName = match[1];
-      
-      // Skip if not an AI-related package
-      if (!Object.values(componentCategories).flat().some(p => packageName.includes(p))) {
-        continue;
-      }
-      
-      const componentName = packageName.split('/').pop() || packageName;
-      const componentType = categorizeComponent(packageName);
-      
-      // Skip vector DB components in files we've already processed
-      if (componentType === 'Vector Database' && processedVectorDBFiles.has(file.path)) {
-        continue;
-      }
-      
-      // Mark this file as processed for vector DB if it's a vector DB component
-      if (componentType === 'Vector Database') {
-        processedVectorDBFiles.add(file.path);
-      }
-      
-      // Add or update component
-      if (!componentMap.has(componentName)) {
-        componentMap.set(componentName, {
-          name: componentName,
-          type: componentType,
-          confidence: 0.9,
-          detectionMethod: 'import',
-          locations: []
-        });
-      }
-      
-      // Find the line number for context
-      const lineIndex = lines.findIndex(line => line.includes(packageName));
-      if (lineIndex >= 0) {
-        componentMap.get(componentName)!.locations.push({
-          file: file.path,
-          line: lineIndex + 1,
-          snippet: lines[lineIndex],
-          context: {
-            before: lines.slice(Math.max(0, lineIndex - 2), lineIndex),
-            after: lines.slice(lineIndex + 1, Math.min(lines.length, lineIndex + 3)),
-            scope: detectScope(lines, lineIndex)
+    if (file.path.endsWith('package.json')) {
+      try {
+        const packageJson = JSON.parse(file.content);
+        const allDeps = {
+          ...(packageJson.dependencies || {}),
+          ...(packageJson.devDependencies || {})
+        };
+        
+        for (const [pkg, version] of Object.entries(allDeps)) {
+          if (packageToImportMap[pkg]) {
+            dependencyMap.set(pkg, packageToImportMap[pkg]);
           }
-        });
+        }
+      } catch (e) {
+        console.error('Error parsing package.json:', e);
       }
     }
     
-    // Second pass: detect actual usage patterns (limit to most important ones)
-    const usagePatterns = [
-      { pattern: /new\s+Pinecone\(|Pinecone\(/, type: 'Vector Database', name: 'pinecone' },
-      { pattern: /ChatOpenAI\(/, type: 'LLM Provider', name: 'openai' },
-      { pattern: /ChatAnthropic\(/, type: 'LLM Provider', name: 'anthropic' },
-      { pattern: /ChatGoogleGenerativeAI\(/, type: 'LLM Provider', name: 'google-ai' }
-    ];
-    
-    // Skip vector DB usage detection for files we've already processed
-    if (!processedVectorDBFiles.has(file.path)) {
-      for (const { pattern, type, name } of usagePatterns) {
-        if (pattern.test(file.content)) {
-          // Find the line
-          const lineIndex = lines.findIndex(line => pattern.test(line));
-          if (lineIndex >= 0) {
-            if (!componentMap.has(name)) {
-              componentMap.set(name, {
-                name,
-                type,
-                confidence: 0.9,
-                detectionMethod: 'usage',
-                locations: []
-              });
-            }
-            
-            // For vector databases, mark this file as processed
-            if (type === 'Vector Database') {
-              processedVectorDBFiles.add(file.path);
-            }
-            
-            componentMap.get(name)!.locations.push({
-              file: file.path,
-              line: lineIndex + 1,
-              snippet: lines[lineIndex],
-              context: {
-                before: lines.slice(Math.max(0, lineIndex - 2), lineIndex),
-                after: lines.slice(lineIndex + 1, Math.min(lines.length, lineIndex + 3)),
-                scope: detectScope(lines, lineIndex)
-              }
-            });
-          }
+    if (file.path.endsWith('requirements.txt')) {
+      const lines = file.content.split('\n');
+      for (const line of lines) {
+        // Extract package name from requirements.txt line
+        const match = line.match(/^([a-zA-Z0-9_-]+)([><=~]|$)/);
+        if (match && packageToImportMap[match[1]]) {
+          dependencyMap.set(match[1], packageToImportMap[match[1]]);
         }
       }
     }
   }
   
-  // Post-processing: limit locations to most relevant ones (max 3 per component)
-  for (const component of componentMap.values()) {
-    // Sort locations by importance (usage > import, main files > old files)
-    component.locations.sort((a, b) => {
-      // Prefer non-old files
-      if (a.file.includes('/old/') && !b.file.includes('/old/')) return 1;
-      if (!a.file.includes('/old/') && b.file.includes('/old/')) return -1;
-      
-      // Prefer actual usage over imports
-      const aIsUsage = a.snippet.includes('(') && !a.snippet.startsWith('import');
-      const bIsUsage = b.snippet.includes('(') && !b.snippet.startsWith('import');
-      if (aIsUsage && !bIsUsage) return -1;
-      if (!aIsUsage && bIsUsage) return 1;
-      
-      return 0;
-    });
-    
-    // Limit to max 3 locations per component
-    component.locations = component.locations.slice(0, 3);
-  }
-  
-  return Array.from(componentMap.values());
+  return dependencyMap;
 }
 
-// Also improve the risk detection to include proper evidence
-function detectSecurityRisks(files: RepositoryFile[], components: AIComponent[]): SecurityRisk[] {
-  // Create a map of risk types to avoid duplication
-  const riskMap = new Map<string, SecurityRisk>();
+function trackImports(files: RepositoryFile[], dependencies: Map<string, string[]>): Map<string, Set<string>> {
+  // Map of file paths to sets of imported modules and their aliases
+  const importMap = new Map<string, Set<string>>();
   
-  // Check if we have RAG components (vector databases + LLMs)
-  const hasVectorDB = components.some(c => c.type === 'Vector Database');
-  const hasLLM = components.some(c => 
-    c.type === 'LLM Provider' || 
-    c.name.toLowerCase().includes('openai') || 
-    c.name.toLowerCase().includes('anthropic')
-  );
+  // Flattened list of all possible import names to look for
+  const allImportNames = Array.from(dependencies.values()).flat();
   
-  // Initialize RAG-specific risks if we have both vector DBs and LLMs
-  if (hasVectorDB && hasLLM) {
-    // LLM08:2025 - Vector and Embedding Weaknesses
-    riskMap.set("RAG Data Leakage", {
-      risk: "RAG Data Leakage",
-      severity: "medium" as Severity,
-      description: "RAG implementation may leak sensitive information through vector retrieval",
-      owaspCategory: OWASP_LLM_CATEGORIES.VECTOR_AND_EMBEDDING_WEAKNESSES,
-      relatedComponents: components.filter(c => c.type === 'Vector Database').map(c => c.name),
-      evidence: [],
-      confidence: 0.85
-    });
+  for (const file of files) {
+    const importSet = new Set<string>();
     
-    // LLM01:2025 - Prompt Injection
-    riskMap.set("RAG Prompt Injection", {
-      risk: "RAG Prompt Injection",
-      severity: "high" as Severity,
-      description: "User input is used in RAG queries without proper sanitization",
-      owaspCategory: OWASP_LLM_CATEGORIES.PROMPT_INJECTION,
-      relatedComponents: components.filter(c => c.type === 'Vector Database').map(c => c.name),
-      evidence: [],
-      confidence: 0.9
-    });
+    // Different import patterns for different languages
+    if (file.extension === '.py') {
+      // Python imports
+      const importRegexes = [
+        /from\s+([a-zA-Z0-9_.]+)\s+import\s+([^#\n]+)/g,  // from X import Y
+        /import\s+([^#\n]+)/g  // import X
+      ];
+      
+      for (const regex of importRegexes) {
+        const matches = [...file.content.matchAll(regex)];
+        for (const match of matches) {
+          const importPath = match[1];
+          
+          // Check if this import matches any of our target dependencies
+          if (allImportNames.some(name => importPath.includes(name))) {
+            importSet.add(importPath);
+            
+            // If it's a "from X import Y" pattern, also track the imported items
+            if (match[2]) {
+              const importedItems = match[2].split(',').map(item => item.trim().split(' as ')[0]);
+              for (const item of importedItems) {
+                importSet.add(item);
+              }
+            }
+          }
+        }
+      }
+    } else if (['.js', '.ts', '.jsx', '.tsx'].includes(file.extension)) {
+      // JavaScript/TypeScript imports
+      const importRegexes = [
+        /import\s+(?:{\s*([^}]+)\s*}|([^;]+))\s+from\s+['"]([^'"]+)['"]/g,  // import { X } from 'Y' or import X from 'Y'
+        /const\s+([a-zA-Z0-9_]+)\s+=\s+require\(['"]([^'"]+)['"]\)/g  // const X = require('Y')
+      ];
+      
+      for (const regex of importRegexes) {
+        const matches = [...file.content.matchAll(regex)];
+        for (const match of matches) {
+          const importPath = match[3] || match[2];
+          
+          // Check if this import matches any of our target dependencies
+          if (allImportNames.some(name => importPath?.includes(name))) {
+            importSet.add(importPath);
+            
+            // If it's a destructured import, also track the imported items
+            if (match[1]) {
+              const importedItems = match[1].split(',').map(item => item.trim().split(' as ')[0]);
+              for (const item of importedItems) {
+                importSet.add(item);
+              }
+            }
+            
+            // If it's a default import or require, track the variable name
+            if (match[2] || match[1]) {
+              importSet.add(match[2] || match[1]);
+            }
+          }
+        }
+      }
+    }
+    
+    if (importSet.size > 0) {
+      importMap.set(file.path, importSet);
+    }
   }
   
-  // Add evidence with meaningful context
-  for (const file of files) {
-    if (!file.content) continue;
+  return importMap;
+}
+
+function findComponentUsage(files: RepositoryFile[], imports: Map<string, Set<string>>): AIComponent[] {
+  const components: AIComponent[] = [];
+  const componentMap = new Map<string, AIComponent>();
+  
+  // Component type classification
+  const componentTypes: Record<string, string> = {
+    'pinecone': 'Vector Database',
+    'openai': 'LLM Provider',
+    'anthropic': 'LLM Provider',
+    'langchain': 'LLM Framework',
+    // Add more as needed
+  };
+  
+  for (const [filePath, importSet] of imports.entries()) {
+    const file = files.find(f => f.path === filePath);
+    if (!file) continue;
     
     const lines = file.content.split('\n');
     
-    // Check for RAG prompt injection vulnerabilities
-    if (hasVectorDB && hasLLM) {
-      // Look for query operations that might use user input
-      const queryLines = lines
+    // Look for actual usage of imported modules
+    for (const importName of importSet) {
+      // Skip common words that might cause false positives
+      if (['from', 'import', 'as'].includes(importName)) continue;
+      
+      // Determine component type
+      let componentType = 'Library';
+      for (const [pattern, type] of Object.entries(componentTypes)) {
+        if (importName.toLowerCase().includes(pattern)) {
+          componentType = type;
+          break;
+        }
+      }
+      
+      // Look for instantiation or usage
+      const usageLines = lines
         .map((line, idx) => ({ line, idx }))
-        .filter(({ line }) => 
-          /\.query\s*\(/.test(line) && 
-          /user|input|prompt|message|text/.test(line) &&
-          !/sanitize|validate|clean/.test(line.toLowerCase())
-        );
+        .filter(({ line }) => {
+          // Match patterns like: new X(), X(), X.method(), const y = X
+          const pattern = new RegExp(`(new\\s+${importName}|${importName}\\s*\\(|${importName}\\.[a-zA-Z]+|=\\s*${importName})`, 'i');
+          return pattern.test(line);
+        });
+      
+      if (usageLines.length > 0) {
+        // Create or update component
+        const componentName = importName;
+        if (!componentMap.has(componentName)) {
+          componentMap.set(componentName, {
+            name: componentName,
+            type: componentType,
+            confidence: 0.95,
+            detectionMethod: 'usage',
+            locations: []
+          });
+        }
         
-      if (queryLines.length > 0) {
-        const risk = riskMap.get("RAG Prompt Injection")!;
-        queryLines.forEach(({ line, idx }) => {
-          risk.evidence.push({
-            file: file.path,
+        // Add usage locations (limit to 3 most relevant)
+        const component = componentMap.get(componentName)!;
+        for (const { line, idx } of usageLines.slice(0, 3)) {
+          component.locations.push({
+            file: filePath,
             line: idx + 1,
             snippet: line.trim(),
             context: {
@@ -976,11 +919,161 @@ function detectSecurityRisks(files: RepositoryFile[], components: AIComponent[])
               scope: detectScope(lines, idx)
             }
           });
+        }
+      }
+    }
+  }
+  
+  return Array.from(componentMap.values());
+}
+
+function identifyRisks(files: RepositoryFile[], components: AIComponent[], imports: Map<string, Set<string>>): SecurityRisk[] {
+  const risks: SecurityRisk[] = [];
+  const riskMap = new Map<string, SecurityRisk>();
+  
+  // Check for vector database + LLM combination (RAG pattern)
+  const vectorDBComponents = components.filter(c => c.type === 'Vector Database');
+  const llmComponents = components.filter(c => c.type === 'LLM Provider');
+  
+  if (vectorDBComponents.length > 0 && llmComponents.length > 0) {
+    // We have a RAG pattern - look for specific risks
+    
+    // 1. RAG Prompt Injection risk
+    const promptInjectionRisk: SecurityRisk = {
+      risk: "RAG Prompt Injection",
+      severity: "high",
+      description: "User input is used in RAG queries without proper sanitization",
+      owaspCategory: OWASP_LLM_CATEGORIES.PROMPT_INJECTION,
+      relatedComponents: vectorDBComponents.map(c => c.name),
+      evidence: [],
+      confidence: 0.9
+    };
+    
+    // 2. RAG Data Leakage risk
+    const dataLeakageRisk: SecurityRisk = {
+      risk: "RAG Data Leakage",
+      severity: "medium",
+      description: "RAG implementation may leak sensitive information through vector retrieval",
+      owaspCategory: OWASP_LLM_CATEGORIES.VECTOR_AND_EMBEDDING_WEAKNESSES,
+      relatedComponents: vectorDBComponents.map(c => c.name),
+      evidence: [],
+      confidence: 0.85
+    };
+    
+    // Find evidence for these risks
+    for (const file of files) {
+      const filePath = file.path;
+      const importSet = imports.get(filePath);
+      if (!importSet) continue;
+      
+      const lines = file.content.split('\n');
+      
+      // Check for vector DB query operations with user input
+      if (vectorDBComponents.some(c => c.locations.some(loc => loc.file === filePath))) {
+        // This file uses a vector DB - look for query operations
+        const queryLines = lines
+          .map((line, idx) => ({ line, idx }))
+          .filter(({ line }) => 
+            /\.query\s*\(/.test(line) && 
+            /user|input|prompt|message|text/.test(line) &&
+            !/sanitize|validate|clean/.test(line.toLowerCase())
+          );
+          
+        if (queryLines.length > 0) {
+          for (const { line, idx } of queryLines) {
+            promptInjectionRisk.evidence.push({
+              file: filePath,
+              line: idx + 1,
+              snippet: line.trim(),
+              context: {
+                before: lines.slice(Math.max(0, idx - 2), idx),
+                after: lines.slice(idx + 1, Math.min(lines.length, idx + 3)),
+                scope: detectScope(lines, idx)
+              }
+            });
+          }
+        }
+        
+        // Check for vector DB upsert operations without data filtering
+        const upsertLines = lines
+          .map((line, idx) => ({ line, idx }))
+          .filter(({ line }) => 
+            /upsert|index|store/.test(line) && 
+            !/filter|sanitize|redact/.test(line.toLowerCase())
+          );
+          
+        if (upsertLines.length > 0) {
+          for (const { line, idx } of upsertLines) {
+            dataLeakageRisk.evidence.push({
+              file: filePath,
+              line: idx + 1,
+              snippet: line.trim(),
+              context: {
+                before: lines.slice(Math.max(0, idx - 2), idx),
+                after: lines.slice(idx + 1, Math.min(lines.length, idx + 3)),
+                scope: detectScope(lines, idx)
+              }
+            });
+          }
+        }
+      }
+    }
+    
+    // Only add risks if we found evidence
+    if (promptInjectionRisk.evidence.length > 0) {
+      risks.push(promptInjectionRisk);
+    }
+    
+    if (dataLeakageRisk.evidence.length > 0) {
+      risks.push(dataLeakageRisk);
+    }
+  }
+  
+  // Check for hardcoded API keys
+  const apiKeyRisk: SecurityRisk = {
+    risk: "Hardcoded API Keys",
+    severity: "high",
+    description: "API keys or credentials found directly in code",
+    owaspCategory: OWASP_LLM_CATEGORIES.SUPPLY_CHAIN,
+    relatedComponents: [],
+    evidence: [],
+    confidence: 0.95
+  };
+  
+  for (const file of files) {
+    const lines = file.content.split('\n');
+    
+    // Improve API key detection regex
+    const apiKeyLines = lines
+      .map((line, idx) => ({ line, idx }))
+      .filter(({ line }) => {
+        // More comprehensive API key detection
+        const hasKeyIdentifier = /api[-_]?key|apikey|secret[-_]?key|token|auth[-_]?key/i.test(line);
+        const hasKeyPattern = /=\s*["']([a-zA-Z0-9_\-\.]{20,})["']/.test(line) || 
+                             /=\s*process\.env\.([A-Z_]+)/.test(line) ||
+                             /=\s*Deno\.env\.get\(['"]([A-Z_]+)['"]\)/.test(line);
+        return hasKeyIdentifier && hasKeyPattern && !line.includes('process.env');
+      });
+      
+    if (apiKeyLines.length > 0) {
+      for (const { line, idx } of apiKeyLines) {
+        apiKeyRisk.evidence.push({
+          file: file.path,
+          line: idx + 1,
+          snippet: line.trim(),
+          context: {
+            before: lines.slice(Math.max(0, idx - 2), idx),
+            after: lines.slice(idx + 1, Math.min(lines.length, idx + 3)),
+            scope: detectScope(lines, idx)
+          }
         });
       }
     }
   }
   
-  // Filter out risks with no evidence
-  return Array.from(riskMap.values()).filter(risk => risk.evidence.length > 0);
+  if (apiKeyRisk.evidence.length > 0) {
+    risks.push(apiKeyRisk);
+  }
+  
+  return risks;
 } 
