@@ -69,6 +69,8 @@ interface ReportResultsProps {
 }
 
 export default function ReportResults({ report }: ReportResultsProps) {
+  console.log('Report data:', report);
+
   if (!report) {
     return (
       <Alert variant="destructive">
@@ -80,6 +82,9 @@ export default function ReportResults({ report }: ReportResultsProps) {
       </Alert>
     );
   }
+
+  console.log('AI Components:', report.aiComponents);
+  console.log('Security Risks:', report.securityRisks);
 
   return (
     <div className="space-y-6">
@@ -115,7 +120,11 @@ export default function ReportResults({ report }: ReportResultsProps) {
 
       {/* Main Content */}
       <div className="grid gap-4 md:grid-cols-2">
-        <SecurityRisksCard risks={report.securityRisks} />
+        <SecurityRisksCard 
+          risks={report.securityRisks}
+          verifiedCodeReferences={[]}
+          aiComponents={report.aiComponents}
+        />
         <ConfidenceScoreCard components={report.aiComponents} />
       </div>
     </div>
