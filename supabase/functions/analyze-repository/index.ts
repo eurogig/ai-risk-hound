@@ -89,6 +89,11 @@ export const OWASP_LLM_CATEGORIES = {
     id: "LLM10:2025",
     name: "Unbounded Consumption",
     description: "Risks where LLMs consume resources without proper limits, potentially leading to denial of service."
+  },
+  INSECURE_OUTPUT_HANDLING: {
+    id: "LLM05:2025",
+    name: "Insecure Output Handling",
+    description: "Output handling that exposes sensitive information or leads to security risks."
   }
 } as const;
 
@@ -398,65 +403,81 @@ async function analyzeRepository(content: RepositoryContent): Promise<AnalysisRe
     console.log('Analyzing security risks...');
     const securityRisks: SecurityRisk[] = [];
     
+    // Check for hardcoded API keys
+    const apiKeyPattern = /(api_key|apikey|api-key|OPENAI_API_KEY|PINECONEAPI|OPENAIKEY)[\s]*=[\s]*["']?[A-Za-z0-9\-_]+["']?/i;
+    const systemPromptPattern = /(system_prompt|system prompt|systemPrompt|SystemMessage)[\s]*=[\s]*["'`]|content=["'`]/i;
+
     for (const file of content.files) {
-      if (!detectedImports.has(file.path)) {
-        console.log(`Skipping security analysis for ${file.path} - no AI imports detected`);
-        continue;
-      }
-
-      const imports = detectedImports.get(file.path)!;
       const lines = file.content.split('\n');
-
-      // Collect context for risk categorization
-      const context = {
-        hasRag: imports.has('vectordb') || lines.some(l => l.includes('pinecone') || l.includes('chromadb')),
-        hasEmbeddings: lines.some(l => l.includes('embedding') || l.includes('encode')),
-        hasSystemPrompt: lines.some(l => 
-          AI_PATTERNS.systemPrompts.general.test(l) ||
-          AI_PATTERNS.systemPrompts.openai.test(l) ||
-          AI_PATTERNS.systemPrompts.anthropic.test(l)
-        ),
-        hasVectorDB: imports.has('vectordb'),
-        directModelUsage: lines.some(l => 
-          AI_PATTERNS.models.gpt.test(l) || 
-          AI_PATTERNS.models.claude.test(l)
-        ),
-        modelType: 'gpt' // Default, could be more specific
-      };
-
-      // Get the appropriate OWASP category
-      const owaspCategory = categorizeRisk(context);
-
-      if (context.hasSystemPrompt) {
+      
+      // Check for API keys
+      const apiKeyLines = lines.filter(line => apiKeyPattern.test(line));
+      if (apiKeyLines.length > 0) {
+        securityRisks.push({
+          risk: "Hardcoded API Keys",
+          severity: "high",
+          description: "API keys or credentials found directly in code",
+          owaspCategory: OWASP_LLM_CATEGORIES.INSECURE_OUTPUT_HANDLING,
+          relatedComponents: [],
+          evidence: apiKeyLines.map((line, idx) => ({
+            file: file.path,
+            line: lines.indexOf(line) + 1,
+            snippet: line.trim(),
+            context: {
+              before: [],
+              after: [],
+              scope: 'Global'
+            }
+          })),
+          confidence: 0.95
+        });
+      }
+      
+      // Check for system prompts
+      const systemPromptLines = lines.filter(line => systemPromptPattern.test(line));
+      if (systemPromptLines.length > 0) {
         securityRisks.push({
           risk: "System Prompt Exposure",
-          severity: "high",
-          description: "Hardcoded system prompts detected which could expose internal logic",
-          owaspCategory,  // Now using the categorized risk
-          relatedComponents: Array.from(imports),
+          severity: "medium",
+          description: "System prompts found in code which could expose application logic",
+          owaspCategory: OWASP_LLM_CATEGORIES.SYSTEM_PROMPT_LEAKAGE,
+          relatedComponents: [],
+          evidence: systemPromptLines.map((line, idx) => ({
+            file: file.path,
+            line: lines.indexOf(line) + 1,
+            snippet: line.trim(),
+            context: {
+              before: [],
+              after: [],
+              scope: 'Global'
+            }
+          })),
+          confidence: 0.9
+        });
+      }
+      
+      // Check for RAG implementations (potential for prompt injection)
+      if (file.content.includes('pinecone') || file.content.includes('vectordb') || 
+          file.content.includes('chroma') || file.content.includes('rag_data')) {
+        securityRisks.push({
+          risk: "Potential RAG Prompt Injection",
+          severity: "medium",
+          description: "RAG implementation detected without clear input sanitization",
+          owaspCategory: OWASP_LLM_CATEGORIES.PROMPT_INJECTION,
+          relatedComponents: [],
           evidence: [{
             file: file.path,
-            line: lines.findIndex(l => 
-              AI_PATTERNS.systemPrompts.general.test(l) || 
-              AI_PATTERNS.systemPrompts.openai.test(l) || 
-              AI_PATTERNS.systemPrompts.anthropic.test(l)
-            ) + 1,
-            snippet: lines.find(l => 
-              AI_PATTERNS.systemPrompts.general.test(l) || 
-              AI_PATTERNS.systemPrompts.openai.test(l) || 
-              AI_PATTERNS.systemPrompts.anthropic.test(l)
-            )?.trim() || '',
+            line: 1,
+            snippet: "RAG implementation detected",
             context: {
               before: [],
               after: [],
               scope: 'Global'
             }
           }],
-          confidence: 0.95
+          confidence: 0.8
         });
       }
-
-      // Add other risk checks here...
     }
 
     console.log('Analysis complete. Found:');

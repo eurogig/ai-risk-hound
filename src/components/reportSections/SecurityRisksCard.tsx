@@ -122,7 +122,7 @@ const SecurityRisksCard = ({
   
   // Group risks by OWASP category
   const risksByCategory = risks.reduce((acc, risk) => {
-    const category = risk.owaspCategory.id;
+    const category = risk.owaspCategory?.id || 'uncategorized';
     if (!acc[category]) {
       acc[category] = [];
     }
@@ -146,10 +146,12 @@ const SecurityRisksCard = ({
           <div key={category} className="mb-6">
             <h3 className="text-lg font-semibold flex items-center gap-2">
               <ShieldAlert className="h-5 w-5" />
-              {OWASP_LLM_CATEGORIES[category].name}
+              {category !== 'uncategorized' ? 
+                `${category}: ${categoryRisks[0]?.owaspCategory?.name}` : 
+                'Other Risks'}
             </h3>
             <p className="text-sm text-gray-500 mb-2">
-              {OWASP_LLM_CATEGORIES[category].description}
+              {categoryRisks[0]?.owaspCategory?.description || 'Miscellaneous security concerns'}
             </p>
             <Accordion type="single" collapsible>
               {categoryRisks.map((risk, idx) => {
@@ -167,19 +169,19 @@ const SecurityRisksCard = ({
                       <div className="flex items-center justify-between w-full pr-4">
                         <span className="font-medium text-left">{riskName}</span>
                         <div className="flex items-center space-x-2">
-                          {risk.owasp_category && (
+                          {risk.owaspCategory && (
                             <TooltipProvider>
                               <Tooltip>
                                 <TooltipTrigger>
-                                  <Badge className={`${getOwaspBadgeColor(risk.owasp_category.id)} flex items-center`}>
+                                  <Badge className={`${getOwaspBadgeColor(risk.owaspCategory?.id || 'uncategorized')} flex items-center`}>
                                     <ShieldAlert className="h-3 w-3 mr-1" /> 
-                                    {risk.owasp_category.id}
+                                    {risk.owaspCategory?.id || 'N/A'}
                                   </Badge>
                                 </TooltipTrigger>
                                 <TooltipContent side="left" className="max-w-sm">
                                   <div className="max-w-xs">
-                                    <p className="font-bold">{risk.owasp_category.name}</p>
-                                    <p className="text-xs">{risk.owasp_category.description}</p>
+                                    <p className="font-bold">{risk.owaspCategory.name}</p>
+                                    <p className="text-xs">{risk.owaspCategory.description}</p>
                                   </div>
                                 </TooltipContent>
                               </Tooltip>
@@ -196,15 +198,15 @@ const SecurityRisksCard = ({
                         <p className="text-gray-600">{risk.description}</p>
                         
                         {/* OWASP Category Information */}
-                        {risk.owasp_category && (
+                        {risk.owaspCategory && (
                           <div className="bg-gray-50 p-3 rounded-md border border-gray-200 text-sm space-y-1">
                             <div className="flex items-center gap-2">
                               <ShieldAlert className="h-4 w-4 text-gray-700" />
                               <h4 className="font-semibold">OWASP LLM Top 10 Classification:</h4>
                             </div>
                             <div className="pl-6">
-                              <p className="font-medium">{risk.owasp_category.id}: {risk.owasp_category.name}</p>
-                              <p className="text-gray-600 text-sm">{risk.owasp_category.description}</p>
+                              <p className="font-medium">{risk.owaspCategory.id}: {risk.owaspCategory.name}</p>
+                              <p className="text-gray-600 text-sm">{risk.owaspCategory.description}</p>
                             </div>
                           </div>
                         )}

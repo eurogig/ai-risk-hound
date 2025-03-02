@@ -40,6 +40,25 @@ const ConfidenceScoreCard = ({ components }: ConfidenceScoreCardProps) => {
     );
   }
 
+  // Update the confidence score calculation
+  const confidenceScore = components.length > 0 
+    ? Math.round(Math.max(...components.map(c => c.confidence)) * 100)
+    : 0;
+
+  // Update the badge color based on confidence
+  const getBadgeColor = (score: number) => {
+    if (score > 80) return "bg-red-500";
+    if (score > 40) return "bg-yellow-500";
+    return "bg-green-500";
+  };
+
+  // Update the badge text
+  const getBadgeText = (score: number) => {
+    if (score > 80) return "High AI Usage";
+    if (score > 40) return "Moderate AI Usage";
+    return "Low/No AI Usage";
+  };
+
   // Original rendering logic for when we have components
   return (
     <Card>
@@ -50,20 +69,16 @@ const ConfidenceScoreCard = ({ components }: ConfidenceScoreCardProps) => {
         <div className="space-y-2">
           <div className="flex justify-between items-center">
             <span className="text-sm text-gray-500">How likely this repo contains AI components</span>
-            <span className="font-medium">{Math.round(components[0].confidence * 100)}%</span>
+            <span className="font-medium">{confidenceScore}%</span>
           </div>
           <Progress 
-            value={components[0].confidence * 100} 
-            className={`h-2 ${components[0].confidence > 0.7 ? 'bg-red-100' : 'bg-gray-100'}`} 
+            value={confidenceScore} 
+            className={`h-2 ${confidenceScore > 0.7 ? 'bg-red-100' : 'bg-gray-100'}`} 
           />
           <div className="pt-2">
-            {components[0].confidence > 0.8 ? (
-              <Badge className="bg-red-500">High AI Usage</Badge>
-            ) : components[0].confidence > 0.4 ? (
-              <Badge className="bg-yellow-500">Moderate AI Usage</Badge>
-            ) : (
-              <Badge className="bg-green-500">Low/No AI Usage</Badge>
-            )}
+            <Badge className={getBadgeColor(confidenceScore)}>
+              {getBadgeText(confidenceScore)}
+            </Badge>
           </div>
         </div>
       </CardContent>
