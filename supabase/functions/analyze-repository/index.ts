@@ -755,7 +755,160 @@ async function callGPT4(prompt: string): Promise<string> {
   }
 } 
 
-// Step 2: Completely redesign risk detection
+// Completely redesign how we detect and display AI components
+function detectAIComponents(files: RepositoryFile[]): AIComponent[] {
+  // Track unique components by name to avoid duplication
+  const componentMap = new Map<string, AIComponent>();
+  
+  // Track which files have been processed for vector DB references
+  const processedVectorDBFiles = new Set<string>();
+  
+  // Define component categories for better organization
+  const componentCategories = {
+    LLM_PROVIDERS: ['openai', 'anthropic', 'cohere', 'google-ai', 'claude'],
+    VECTOR_DBS: ['pinecone', 'chroma', 'qdrant', 'weaviate', 'milvus'],
+    FRAMEWORKS: ['langchain', 'llama-index', 'haystack', 'semantic-kernel'],
+    EMBEDDING_MODELS: ['sentence-transformers', 'huggingface']
+  };
+  
+  // Helper function to categorize a component
+  function categorizeComponent(name: string): string {
+    if (componentCategories.LLM_PROVIDERS.some(p => name.includes(p))) return 'LLM Provider';
+    if (componentCategories.VECTOR_DBS.some(p => name.includes(p))) return 'Vector Database';
+    if (componentCategories.FRAMEWORKS.some(p => name.includes(p))) return 'LLM Framework';
+    if (componentCategories.EMBEDDING_MODELS.some(p => name.includes(p))) return 'Embedding Model';
+    return 'Library';
+  }
+  
+  // Process each file
+  for (const file of files) {
+    // Skip non-code files or test files
+    if (file.path.includes('test/') || !file.content) continue;
+    
+    const lines = file.content.split('\n');
+    
+    // First pass: detect imports
+    const importMatches = [...file.content.matchAll(/import\s+(?:{\s*[^}]*\s*}|[^;]+)\s+from\s+['"]([^'"]+)['"]/g)];
+    
+    for (const match of importMatches) {
+      const packageName = match[1];
+      
+      // Skip if not an AI-related package
+      if (!Object.values(componentCategories).flat().some(p => packageName.includes(p))) {
+        continue;
+      }
+      
+      const componentName = packageName.split('/').pop() || packageName;
+      const componentType = categorizeComponent(packageName);
+      
+      // Skip vector DB components in files we've already processed
+      if (componentType === 'Vector Database' && processedVectorDBFiles.has(file.path)) {
+        continue;
+      }
+      
+      // Mark this file as processed for vector DB if it's a vector DB component
+      if (componentType === 'Vector Database') {
+        processedVectorDBFiles.add(file.path);
+      }
+      
+      // Add or update component
+      if (!componentMap.has(componentName)) {
+        componentMap.set(componentName, {
+          name: componentName,
+          type: componentType,
+          confidence: 0.9,
+          detectionMethod: 'import',
+          locations: []
+        });
+      }
+      
+      // Find the line number for context
+      const lineIndex = lines.findIndex(line => line.includes(packageName));
+      if (lineIndex >= 0) {
+        componentMap.get(componentName)!.locations.push({
+          file: file.path,
+          line: lineIndex + 1,
+          snippet: lines[lineIndex],
+          context: {
+            before: lines.slice(Math.max(0, lineIndex - 2), lineIndex),
+            after: lines.slice(lineIndex + 1, Math.min(lines.length, lineIndex + 3)),
+            scope: detectScope(lines, lineIndex)
+          }
+        });
+      }
+    }
+    
+    // Second pass: detect actual usage patterns (limit to most important ones)
+    const usagePatterns = [
+      { pattern: /new\s+Pinecone\(|Pinecone\(/, type: 'Vector Database', name: 'pinecone' },
+      { pattern: /ChatOpenAI\(/, type: 'LLM Provider', name: 'openai' },
+      { pattern: /ChatAnthropic\(/, type: 'LLM Provider', name: 'anthropic' },
+      { pattern: /ChatGoogleGenerativeAI\(/, type: 'LLM Provider', name: 'google-ai' }
+    ];
+    
+    // Skip vector DB usage detection for files we've already processed
+    if (!processedVectorDBFiles.has(file.path)) {
+      for (const { pattern, type, name } of usagePatterns) {
+        if (pattern.test(file.content)) {
+          // Find the line
+          const lineIndex = lines.findIndex(line => pattern.test(line));
+          if (lineIndex >= 0) {
+            if (!componentMap.has(name)) {
+              componentMap.set(name, {
+                name,
+                type,
+                confidence: 0.9,
+                detectionMethod: 'usage',
+                locations: []
+              });
+            }
+            
+            // For vector databases, mark this file as processed
+            if (type === 'Vector Database') {
+              processedVectorDBFiles.add(file.path);
+            }
+            
+            componentMap.get(name)!.locations.push({
+              file: file.path,
+              line: lineIndex + 1,
+              snippet: lines[lineIndex],
+              context: {
+                before: lines.slice(Math.max(0, lineIndex - 2), lineIndex),
+                after: lines.slice(lineIndex + 1, Math.min(lines.length, lineIndex + 3)),
+                scope: detectScope(lines, lineIndex)
+              }
+            });
+          }
+        }
+      }
+    }
+  }
+  
+  // Post-processing: limit locations to most relevant ones (max 3 per component)
+  for (const component of componentMap.values()) {
+    // Sort locations by importance (usage > import, main files > old files)
+    component.locations.sort((a, b) => {
+      // Prefer non-old files
+      if (a.file.includes('/old/') && !b.file.includes('/old/')) return 1;
+      if (!a.file.includes('/old/') && b.file.includes('/old/')) return -1;
+      
+      // Prefer actual usage over imports
+      const aIsUsage = a.snippet.includes('(') && !a.snippet.startsWith('import');
+      const bIsUsage = b.snippet.includes('(') && !b.snippet.startsWith('import');
+      if (aIsUsage && !bIsUsage) return -1;
+      if (!aIsUsage && bIsUsage) return 1;
+      
+      return 0;
+    });
+    
+    // Limit to max 3 locations per component
+    component.locations = component.locations.slice(0, 3);
+  }
+  
+  return Array.from(componentMap.values());
+}
+
+// Also improve the risk detection to include proper evidence
 function detectSecurityRisks(files: RepositoryFile[], components: AIComponent[]): SecurityRisk[] {
   // Create a map of risk types to avoid duplication
   const riskMap = new Map<string, SecurityRisk>();
@@ -776,7 +929,7 @@ function detectSecurityRisks(files: RepositoryFile[], components: AIComponent[])
       severity: "medium" as Severity,
       description: "RAG implementation may leak sensitive information through vector retrieval",
       owaspCategory: OWASP_LLM_CATEGORIES.VECTOR_AND_EMBEDDING_WEAKNESSES,
-      relatedComponents: [],
+      relatedComponents: components.filter(c => c.type === 'Vector Database').map(c => c.name),
       evidence: [],
       confidence: 0.85
     });
@@ -787,55 +940,17 @@ function detectSecurityRisks(files: RepositoryFile[], components: AIComponent[])
       severity: "high" as Severity,
       description: "User input is used in RAG queries without proper sanitization",
       owaspCategory: OWASP_LLM_CATEGORIES.PROMPT_INJECTION,
-      relatedComponents: [],
+      relatedComponents: components.filter(c => c.type === 'Vector Database').map(c => c.name),
       evidence: [],
       confidence: 0.9
     });
   }
   
-  // LLM07:2025 - System Prompt Leakage
-  riskMap.set("System Prompt Exposure", {
-    risk: "System Prompt Exposure",
-    severity: "medium" as Severity,
-    description: "System prompts hardcoded in application code",
-    owaspCategory: OWASP_LLM_CATEGORIES.SYSTEM_PROMPT_LEAKAGE,
-    relatedComponents: [],
-    evidence: [],
-    confidence: 0.9
-  });
-  
-  // LLM03:2025 - Supply Chain
-  riskMap.set("Hardcoded API Keys", {
-    risk: "Hardcoded API Keys",
-    severity: "high" as Severity,
-    description: "API keys or credentials found directly in code",
-    owaspCategory: OWASP_LLM_CATEGORIES.SUPPLY_CHAIN,
-    relatedComponents: [],
-    evidence: [],
-    confidence: 0.95
-  });
-  
-  // Scan each file for risks
+  // Add evidence with meaningful context
   for (const file of files) {
-    const lines = file.content.split('\n');
+    if (!file.content) continue;
     
-    // Check for API keys
-    const apiKeyPattern = /(api[-_]?key|apikey|api-key|OPENAI_API_KEY|PINECONEAPI|OPENAIKEY)[\s]*=[\s]*["']?[A-Za-z0-9\-_]+["']?/i;
-    lines.forEach((line, index) => {
-      if (apiKeyPattern.test(line)) {
-        const risk = riskMap.get("Hardcoded API Keys")!;
-        risk.evidence.push({
-          file: file.path,
-          line: index + 1,
-          snippet: line.trim(),
-          context: {
-            before: lines.slice(Math.max(0, index - 2), index),
-            after: lines.slice(index + 1, Math.min(lines.length, index + 3)),
-            scope: detectScope(lines, index)
-          }
-        });
-      }
-    });
+    const lines = file.content.split('\n');
     
     // Check for RAG prompt injection vulnerabilities
     if (hasVectorDB && hasLLM) {
@@ -863,175 +978,9 @@ function detectSecurityRisks(files: RepositoryFile[], components: AIComponent[])
           });
         });
       }
-      
-      // Check for potential data leakage in RAG
-      if (file.path.includes('pinecone') || file.content.includes('vector') || file.content.includes('embed')) {
-        const dataLeakageLines = lines
-          .map((line, idx) => ({ line, idx }))
-          .filter(({ line }) => 
-            /upsert|index|store/.test(line) && 
-            !/filter|sanitize|redact/.test(line.toLowerCase())
-          );
-          
-        if (dataLeakageLines.length > 0) {
-          const risk = riskMap.get("RAG Data Leakage")!;
-          dataLeakageLines.forEach(({ line, idx }) => {
-            risk.evidence.push({
-              file: file.path,
-              line: idx + 1,
-              snippet: line.trim(),
-              context: {
-                before: lines.slice(Math.max(0, idx - 2), idx),
-                after: lines.slice(idx + 1, Math.min(lines.length, idx + 3)),
-                scope: detectScope(lines, idx)
-              }
-            });
-          });
-        }
-      }
     }
-    
-    // Check for system prompts
-    const systemPromptPattern = /(system_prompt|system prompt|systemPrompt|SystemMessage)[\s]*=[\s]*["'`]|content=["'`]/i;
-    lines.forEach((line, index) => {
-      if (systemPromptPattern.test(line)) {
-        const risk = riskMap.get("System Prompt Exposure")!;
-        risk.evidence.push({
-          file: file.path,
-          line: index + 1,
-          snippet: line.trim(),
-          context: {
-            before: lines.slice(Math.max(0, index - 2), index),
-            after: lines.slice(index + 1, Math.min(lines.length, index + 3)),
-            scope: detectScope(lines, index)
-          }
-        });
-      }
-    });
   }
   
   // Filter out risks with no evidence
   return Array.from(riskMap.values()).filter(risk => risk.evidence.length > 0);
-} 
-
-// Step 1: Completely redesign how we detect AI components
-function detectAIComponents(files: RepositoryFile[]): AIComponent[] {
-  // Track unique components by name to avoid duplication
-  const componentMap = new Map<string, AIComponent>();
-  
-  // Track which files have been processed for vector DB references
-  // to avoid duplicate detections
-  const processedVectorDBFiles = new Set<string>();
-  
-  for (const file of files) {
-    const lines = file.content.split('\n');
-    
-    // Check for imports - use regex to extract the actual package name
-    const importMatches = [...file.content.matchAll(/import\s+(?:{\s*[^}]*\s*}|[^;]+)\s+from\s+['"]([^'"]+)['"]/g)];
-    
-    for (const match of importMatches) {
-      const packageName = match[1];
-      let componentType = '';
-      
-      // Categorize the import
-      if (/langchain|llm-chain/.test(packageName)) {
-        componentType = 'LLM Framework';
-      } else if (/openai|anthropic|cohere|huggingface|google-generative/.test(packageName)) {
-        componentType = 'LLM Provider';
-      } else if (/pinecone|chroma|qdrant|weaviate|milvus/.test(packageName)) {
-        componentType = 'Vector Database';
-        // Mark this file as processed for vector DB
-        processedVectorDBFiles.add(file.path);
-      } else if (/sentence-transformers|embedding/.test(packageName)) {
-        componentType = 'Embedding Model';
-      } else {
-        // Skip non-AI packages
-        continue;
-      }
-      
-      // Get the line number and context
-      const lineIndex = lines.findIndex(line => line.includes(packageName));
-      
-      // Create or update component
-      const componentName = packageName.split('/').pop() || packageName;
-      if (!componentMap.has(componentName)) {
-        componentMap.set(componentName, {
-          name: componentName,
-          type: componentType,
-          confidence: 0.95,
-          detectionMethod: 'import',
-          locations: []
-        });
-      }
-      
-      // Add this location
-      componentMap.get(componentName)!.locations.push({
-        file: file.path,
-        line: lineIndex + 1,
-        snippet: lines[lineIndex],
-        context: {
-          before: lines.slice(Math.max(0, lineIndex - 2), lineIndex),
-          after: lines.slice(lineIndex + 1, Math.min(lines.length, lineIndex + 3)),
-          scope: 'Global'
-        }
-      });
-    }
-    
-    // Also check for actual usage patterns (not just imports)
-    // This would detect instantiations like "new PineconeClient()" or "ChatOpenAI()"
-    const usagePatterns = [
-      { pattern: /new\s+Pinecone\(|Pinecone\(/, type: 'Vector Database', name: 'pinecone' },
-      { pattern: /ChatOpenAI\(/, type: 'LLM Provider', name: 'openai' },
-      { pattern: /ChatAnthropic\(/, type: 'LLM Provider', name: 'anthropic' },
-      { pattern: /ChatGoogleGenerativeAI\(/, type: 'LLM Provider', name: 'google-ai' }
-    ];
-    
-    for (const { pattern, type, name } of usagePatterns) {
-      if (pattern.test(file.content)) {
-        // Find the line
-        const lineIndex = lines.findIndex(line => pattern.test(line));
-        if (lineIndex >= 0) {
-          if (!componentMap.has(name)) {
-            componentMap.set(name, {
-              name,
-              type,
-              confidence: 0.9,
-              detectionMethod: 'usage',
-              locations: []
-            });
-          }
-          
-          // For vector databases, skip if we've already processed this file
-          if (type === 'Vector Database' && processedVectorDBFiles.has(file.path)) {
-            continue;
-          }
-          
-          // Mark this file as processed for vector DB if it's a vector DB component
-          if (type === 'Vector Database') {
-            processedVectorDBFiles.add(file.path);
-          }
-          
-          componentMap.get(name)!.locations.push({
-            file: file.path,
-            line: lineIndex + 1,
-            snippet: lines[lineIndex],
-            context: {
-              before: lines.slice(Math.max(0, lineIndex - 2), lineIndex),
-              after: lines.slice(lineIndex + 1, Math.min(lines.length, lineIndex + 3)),
-              scope: detectScope(lines, lineIndex)
-            }
-          });
-        }
-      }
-    }
-    
-    // Skip the vectordb library detection for files we've already processed
-    if (processedVectorDBFiles.has(file.path)) {
-      continue;
-    }
-    
-    // Don't add generic "vectordb" components based on mentions in comments or variable names
-  }
-  
-  return Array.from(componentMap.values());
 } 
