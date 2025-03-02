@@ -403,102 +403,111 @@ async function analyzeRepository(content: RepositoryContent): Promise<AnalysisRe
     console.log('Analyzing security risks...');
     const securityRisks: SecurityRisk[] = [];
     
-    // Check for hardcoded API keys
-    const apiKeyPattern = /(api_key|apikey|api-key|OPENAI_API_KEY|PINECONEAPI|OPENAIKEY)[\s]*=[\s]*["']?[A-Za-z0-9\-_]+["']?/i;
-    const systemPromptPattern = /(system_prompt|system prompt|systemPrompt|SystemMessage)[\s]*=[\s]*["'`]|content=["'`]/i;
+    // Add this to the beginning of the analyze function
+    const riskRegistry = {
+      "Hardcoded API Keys": {
+        risk: "Hardcoded API Keys",
+        severity: "high",
+        description: "API keys or credentials found directly in code",
+        owaspCategory: OWASP_LLM_CATEGORIES.INSECURE_OUTPUT_HANDLING,
+        relatedComponents: [],
+        evidence: [],
+        confidence: 0.95
+      },
+      // Define other risks here
+    };
 
-    for (const file of content.files) {
-      const lines = file.content.split('\n');
-      
-      // Check for API keys
-      const apiKeyLines = lines.filter(line => apiKeyPattern.test(line));
-      if (apiKeyLines.length > 0) {
-        securityRisks.push({
-          risk: "Hardcoded API Keys",
-          severity: "high",
-          description: "API keys or credentials found directly in code",
-          owaspCategory: OWASP_LLM_CATEGORIES.INSECURE_OUTPUT_HANDLING,
-          relatedComponents: [],
-          evidence: apiKeyLines.map((line, idx) => ({
-            file: file.path,
-            line: lines.indexOf(line) + 1,
-            snippet: line.trim(),
-            context: {
-              before: [],
-              after: [],
-              scope: 'Global'
-            }
-          })),
-          confidence: 0.95
+    // Then in the detection function
+    function detectSecurityRisks(file: RepositoryFile, aiComponents: AIComponent[]): void {
+      // API key detection
+      const apiKeyPattern = /api[-_]?key|apikey|secret[-_]?key|token/i;
+      if (apiKeyPattern.test(file.content)) {
+        // Add evidence to existing risk instead of creating a new one
+        const lines = file.content.split('\n');
+        lines.forEach((line, index) => {
+          if (apiKeyPattern.test(line)) {
+            riskRegistry["Hardcoded API Keys"].evidence.push({
+              file: file.path,
+              line: index + 1,
+              snippet: line.trim(),
+              context: {
+                before: lines.slice(Math.max(0, index - 2), index),
+                after: lines.slice(index + 1, Math.min(lines.length, index + 3)),
+                scope: "Global" // Or determine scope
+              }
+            });
+          }
         });
       }
       
-      // Check for system prompts
-      const systemPromptLines = lines.filter(line => systemPromptPattern.test(line));
-      if (systemPromptLines.length > 0) {
-        securityRisks.push({
-          risk: "System Prompt Exposure",
-          severity: "medium",
-          description: "System prompts found in code which could expose application logic",
-          owaspCategory: OWASP_LLM_CATEGORIES.SYSTEM_PROMPT_LEAKAGE,
-          relatedComponents: [],
-          evidence: systemPromptLines.map((line, idx) => ({
-            file: file.path,
-            line: lines.indexOf(line) + 1,
-            snippet: line.trim(),
-            context: {
-              before: [],
-              after: [],
-              scope: 'Global'
-            }
-          })),
-          confidence: 0.9
-        });
-      }
-      
-      // Check for RAG implementations (potential for prompt injection)
-      if (file.content.includes('pinecone') || file.content.includes('vectordb') || 
-          file.content.includes('chroma') || file.content.includes('rag_data')) {
-        securityRisks.push({
-          risk: "Potential RAG Prompt Injection",
-          severity: "medium",
-          description: "RAG implementation detected without clear input sanitization",
-          owaspCategory: OWASP_LLM_CATEGORIES.PROMPT_INJECTION,
-          relatedComponents: [],
-          evidence: [{
-            file: file.path,
-            line: 1,
-            snippet: "RAG implementation detected",
-            context: {
-              before: [],
-              after: [],
-              scope: 'Global'
-            }
-          }],
-          confidence: 0.8
-        });
-      }
+      // Other risk detections...
     }
+
+    // At the end, convert the registry to an array
+    const securityRisks = Object.values(riskRegistry).filter(risk => risk.evidence.length > 0);
 
     console.log('Analysis complete. Found:');
     console.log(`- ${aiComponents.length} AI components`);
     console.log(`- ${securityRisks.length} security risks`);
     console.log(`- ${callGraph.nodes.length} files in call graph`);
 
+    // Before returning the final analysis, deduplicate security risks
+    const deduplicatedRisks = new Map();
+
+    // Group risks by name and merge evidence
+    securityRisks.forEach(risk => {
+      const riskName = risk.risk || risk.risk_name || '';
+      
+      if (deduplicatedRisks.has(riskName)) {
+        // Merge evidence from duplicate risks
+        const existingRisk = deduplicatedRisks.get(riskName);
+        
+        // Merge evidence arrays if they exist
+        if (risk.evidence && existingRisk.evidence) {
+          // Create a set of existing evidence to avoid exact duplicates
+          const existingEvidenceSet = new Set(
+            existingRisk.evidence.map(e => `${e.file}:${e.line}:${e.snippet}`)
+          );
+          
+          // Only add new evidence that doesn't already exist
+          risk.evidence.forEach(evidence => {
+            const evidenceKey = `${evidence.file}:${evidence.line}:${evidence.snippet}`;
+            if (!existingEvidenceSet.has(evidenceKey)) {
+              existingRisk.evidence.push(evidence);
+            }
+          });
+        }
+        
+        // Merge related components if they exist
+        if (risk.relatedComponents && existingRisk.relatedComponents) {
+          existingRisk.relatedComponents = [...new Set([
+            ...existingRisk.relatedComponents,
+            ...risk.relatedComponents
+          ])];
+        }
+      } else {
+        // Add new risk to the map
+        deduplicatedRisks.set(riskName, {...risk});
+      }
+    });
+
+    // Convert map back to array for the final response
+    const finalSecurityRisks = Array.from(deduplicatedRisks.values());
+
     return {
       repositoryName: content.repositoryName,
       timestamp: new Date().toISOString(),
       aiComponents,
-      securityRisks,
+      securityRisks: finalSecurityRisks,
       callGraph,
       summary: {
         totalAIUsage: aiComponents.length,
         risksByLevel: {
-          high: securityRisks.filter(r => r.severity === 'high').length,
-          medium: securityRisks.filter(r => r.severity === 'medium').length,
-          low: securityRisks.filter(r => r.severity === 'low').length
+          high: finalSecurityRisks.filter(r => r.severity === 'high').length,
+          medium: finalSecurityRisks.filter(r => r.severity === 'medium').length,
+          low: finalSecurityRisks.filter(r => r.severity === 'low').length
         },
-        topRisks: securityRisks
+        topRisks: finalSecurityRisks
           .sort((a, b) => b.confidence - a.confidence)
           .slice(0, 3)
           .map(r => r.risk)
