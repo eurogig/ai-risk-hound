@@ -1,1544 +1,1082 @@
-// Follow this setup guide to integrate the Deno runtime and the Supabase JS library with your project:
-// https://docs.deno.com/runtime/manual/getting_started/setup_your_environment
-// https://github.com/denoland/deno_std/tree/main/http/server.ts
-
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.4.0'
-import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
-import { encode, decode } from 'https://deno.land/std@0.168.0/encoding/base64.ts'
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.4.0"
+import { Configuration, OpenAIApi } from "https://esm.sh/openai@3.3.0"
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-// Fetch the OpenAI API key from the environment variable
-const openaiApiKey = Deno.env.get('OPENAI_API_KEY')
+// Core types
+type RepositoryFile = {
+  path: string;
+  content: string;
+  extension: string;
+}
+
+type RepositoryContent = {
+  repositoryName: string;
+  files: RepositoryFile[];
+}
+
+type CodeLocation = {
+  file: string;
+  line: number;
+  snippet: string;
+  context: {
+    before: string[];
+    after: string[];
+    scope?: string;
+  }
+}
+
+type AIComponent = {
+  name: string;
+  type: string;
+  confidence: number;
+  detectionMethod: 'import' | 'usage' | 'package' | 'configuration';
+  locations: CodeLocation[];
+}
+
+// OWASP LLM Top 10 2025 Categories
+export const OWASP_LLM_CATEGORIES = {
+  PROMPT_INJECTION: {
+    id: "LLM01:2025",
+    name: "Prompt Injection",
+    description: "Occurs when user inputs alter the LLM's behavior or output in unintended ways."
+  },
+  SENSITIVE_INFORMATION_DISCLOSURE: {
+    id: "LLM02:2025",
+    name: "Sensitive Information Disclosure",
+    description: "Risks of exposing sensitive or personal information through LLM interactions."
+  },
+  SUPPLY_CHAIN: {
+    id: "LLM03:2025",
+    name: "Supply Chain",
+    description: "Vulnerabilities in the LLM supply chain affecting the integrity of training data, models, and deployment."
+  },
+  DATA_AND_MODEL_POISONING: {
+    id: "LLM04:2025",
+    name: "Data and Model Poisoning",
+    description: "Manipulation of training data to introduce vulnerabilities, backdoors, or biases."
+  },
+  IMPROPER_OUTPUT_HANDLING: {
+    id: "LLM05:2025",
+    name: "Improper Output Handling",
+    description: "Insufficient validation or sanitization of LLM outputs leading to security risks."
+  },
+  EXCESSIVE_AGENCY: {
+    id: "LLM06:2025",
+    name: "Excessive Agency",
+    description: "Risks where LLMs perform actions beyond intended limits or authority."
+  },
+  SYSTEM_PROMPT_LEAKAGE: {
+    id: "LLM07:2025",
+    name: "System Prompt Leakage",
+    description: "Exposure of system prompts revealing internal logic or configurations."
+  },
+  VECTOR_AND_EMBEDDING_WEAKNESSES: {
+    id: "LLM08:2025",
+    name: "Vector and Embedding Weaknesses",
+    description: "Weaknesses in how vectors and embeddings are generated, stored, or retrieved."
+  },
+  MISINFORMATION: {
+    id: "LLM09:2025",
+    name: "Misinformation",
+    description: "Generation of false or misleading information presented as factual."
+  },
+  UNBOUNDED_CONSUMPTION: {
+    id: "LLM10:2025",
+    name: "Unbounded Consumption",
+    description: "Risks where LLMs consume resources without proper limits, potentially leading to denial of service."
+  },
+  INSECURE_OUTPUT_HANDLING: {
+    id: "LLM05:2025",
+    name: "Insecure Output Handling",
+    description: "Output handling that exposes sensitive information or leads to security risks."
+  }
+} as const;
+
+// Helper type for severity levels
+type Severity = 'high' | 'medium' | 'low';
+
+// Update SecurityRisk type to use OWASP categories
+type SecurityRisk = {
+  risk: string;
+  severity: Severity;
+  description: string;
+  owaspCategory: typeof OWASP_LLM_CATEGORIES[keyof typeof OWASP_LLM_CATEGORIES];
+  relatedComponents: string[];
+  evidence: CodeLocation[];
+  confidence: number;
+};
+
+type AnalysisResult = {
+  repositoryName: string;
+  timestamp: string;
+  aiComponents: AIComponent[];
+  securityRisks: SecurityRisk[];
+  callGraph: {
+    nodes: string[];
+    edges: Array<{
+      from: string;
+      to: string;
+      type: string;
+    }>;
+  };
+  summary: {
+    totalAIUsage: number;
+    risksByLevel: {
+      high: number;
+      medium: number;
+      low: number;
+    };
+    topRisks: string[];
+  };
+}
+
+// Detection patterns
+const AI_PATTERNS = {
+  imports: {
+    langchain: /from\s+langchain|import.*langchain|require\(['"]langchain/i,
+    openai: /from\s+openai|import.*openai|require\(['"]openai/i,
+    anthropic: /from\s+anthropic|import.*anthropic|require\(['"]anthropic/i,
+    huggingface: /from\s+transformers|import.*transformers|require\(['"]transformers/i,
+    vectordb: /(pinecone|weaviate|chromadb|qdrant)/i
+  },
+  models: {
+    gpt: /gpt-[34]\.[45]|gpt-4|text-davinci/i,
+    claude: /claude-[12]|claude-instant/i,
+    llama: /llama-[127]b|llama2/i,
+    mistral: /mistral-[127]b|mixtral/i
+  },
+  systemPrompts: {
+    openai: /role:\s*['"]system['"],\s*content:/i,
+    anthropic: /\bHuman:\s*.*?\bAssistant:/is,
+    general: /system[_-]?prompt|instruction[_-]?template/i
+  }
+};
+
+// Add after AI_PATTERNS
+
+const PACKAGE_PATTERNS = {
+  python: {
+    files: ['requirements.txt', 'Pipfile', 'pyproject.toml', 'setup.py'],
+    aiLibraries: {
+      'openai': { type: 'LLM API' },
+      'langchain': { type: 'LLM Framework' },
+      'transformers': { type: 'ML Framework' },
+      'sentence-transformers': { type: 'Embedding Generation' },
+      'pinecone-client': { type: 'Vector Database' },
+      'chromadb': { type: 'Vector Database' },
+      'llama-cpp-python': { type: 'LLM Framework' },
+      'anthropic': { type: 'LLM API' },
+      'cohere': { type: 'LLM API' }
+    }
+  },
+  node: {
+    files: ['package.json'],
+    aiLibraries: {
+      '@openai/openai-api': { type: 'LLM API' },
+      'langchain': { type: 'LLM Framework' },
+      '@huggingface/inference': { type: 'ML Framework' },
+      '@pinecone-database/pinecone': { type: 'Vector Database' },
+      'chromadb': { type: 'Vector Database' },
+      '@anthropic-ai/sdk': { type: 'LLM API' }
+    }
+  }
+};
+
+function analyzePackageFiles(files: RepositoryFile[]): AIComponent[] {
+  const components: AIComponent[] = [];
+  
+  for (const file of files) {
+    // Python requirements.txt
+    if (file.path.endsWith('requirements.txt')) {
+      const lines = file.content.split('\n');
+      for (const line of lines) {
+        const pkg = line.split('==')[0].split('>=')[0].trim();
+        if (PACKAGE_PATTERNS.python.aiLibraries[pkg]) {
+          components.push({
+            name: pkg,
+            type: PACKAGE_PATTERNS.python.aiLibraries[pkg].type,
+            confidence: 0.95,
+            detectionMethod: 'package',
+            locations: [{
+              file: file.path,
+              line: lines.indexOf(line) + 1,
+              snippet: line,
+              context: {
+                before: lines.slice(Math.max(0, lines.indexOf(line) - 2), lines.indexOf(line)),
+                after: lines.slice(lines.indexOf(line) + 1, lines.indexOf(line) + 3),
+                scope: 'Global'
+              }
+            }]
+          });
+        }
+      }
+    }
+    
+    // package.json
+    if (file.path.endsWith('package.json')) {
+      try {
+        const pkg = JSON.parse(file.content);
+        const deps = { ...pkg.dependencies, ...pkg.devDependencies };
+        for (const [name, version] of Object.entries(deps)) {
+          if (PACKAGE_PATTERNS.node.aiLibraries[name]) {
+            components.push({
+              name,
+              type: PACKAGE_PATTERNS.node.aiLibraries[name].type,
+              confidence: 0.95,
+              detectionMethod: 'package',
+              locations: [{
+                file: file.path,
+                line: 1, // We'd need a JSON parser to get exact line numbers
+                snippet: `"${name}": "${version}"`,
+                context: {
+                  before: [],
+                  after: [],
+                  scope: 'dependencies'
+                }
+              }]
+            });
+          }
+        }
+      } catch (e) {
+        console.error('Error parsing package.json:', e);
+      }
+    }
+  }
+  
+  return components;
+}
 
 // Simple in-memory cache (will reset on function restart)
-const analysisCache = new Map();
+const analysisCache = new Map<string, AnalysisResult>();
 
-// Define the serve function
+// Main handler
 serve(async (req) => {
-  // This is needed if you're planning to invoke your function from a browser.
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
   }
 
   try {
-    // Get the request body
-    const requestData = await req.json();
-    const { repositoryUrl, options = {} } = requestData;
-
-    console.log(`Processing repository: ${repositoryUrl}`);
-
-    // Set some reasonable limits to prevent abuse
-    if (!repositoryUrl) {
-      return new Response(
-        JSON.stringify({ error: 'Repository URL is required' }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
-      );
-    }
-
-    // Check cache first to avoid repeated API calls
-    const cacheKey = `${repositoryUrl}-${JSON.stringify(options)}`;
-    if (analysisCache.has(cacheKey)) {
-      console.log(`Returning cached analysis for ${repositoryUrl}`);
-      const cachedResult = analysisCache.get(cacheKey);
-      return new Response(
-        JSON.stringify(cachedResult),
+    const { repositoryUrl } = await req.json()
+    
+    // Check cache first
+    const cacheKey = repositoryUrl;
+    const cached = analysisCache.get(cacheKey);
+    if (cached) {
+      return new Response(JSON.stringify(cached), 
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    // Enhanced repository scraping logic to handle nested structures
+    // Fetch and analyze repository
     const repositoryContent = await fetchRepositoryContent(repositoryUrl);
-    
-    if (repositoryContent.error) {
-      return new Response(
-        JSON.stringify({ error: repositoryContent.error }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 500 }
-      );
-    }
+    const result = await analyzeRepository(repositoryContent.files);
 
-    // Debug mode - include repository content in response if requested
-    const debugMode = options.debugMode || false;
-    let debugInfo = null;
-    
-    if (debugMode) {
-      // Limit debug info to avoid huge responses
-      debugInfo = {
-        fileCount: repositoryContent.files.length,
-        filePaths: repositoryContent.files.map(f => f.path).slice(0, 100), // Just send first 100 paths for debugging
-        totalFilesFound: repositoryContent.files.length,
-        repositoryName: repositoryContent.repositoryName,
-        repoSize: JSON.stringify(repositoryContent).length,
-      };
-      console.log(`Debug info: ${JSON.stringify(debugInfo, null, 2)}`);
-    }
-
-    // Extract components directly from repository content as a fallback mechanism
-    const extractedComponents = extractComponentsFromRepository(repositoryContent);
-
-    try {
-      // Try to analyze with OpenAI first
-      const analysisResult = await analyzeRepository(repositoryContent, options);
-      
-      // Post-process results to enhance
-      const enhancedResult = postProcessAnalysisResults(analysisResult, repositoryContent);
-      
-      // Cache the result
-      analysisCache.set(cacheKey, { ...enhancedResult, debug: debugInfo });
-      
-      // Return the result
-      return new Response(
-        JSON.stringify({ ...enhancedResult, debug: debugInfo }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    } catch (openaiError) {
-      console.error('OpenAI analysis failed:', openaiError);
-      
-      // If OpenAI fails with a rate limit, use the fallback analysis
-      if (openaiError.message && openaiError.message.includes('429')) {
-        console.log('Rate limit hit, using fallback analysis mechanism');
-        
-        const fallbackResult = generateFallbackAnalysis(repositoryContent, extractedComponents);
-        
-        // Cache the fallback result
-        analysisCache.set(cacheKey, { ...fallbackResult, debug: debugInfo, fallback: true });
-        
-        // Return the fallback result
-        return new Response(
-          JSON.stringify({ ...fallbackResult, debug: debugInfo, fallback: true }),
-          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-        );
-      }
-      
-      // If it's not a rate limit issue, propagate the error
-      throw openaiError;
-    }
-  } catch (error) {
-    console.error('Error processing request:', error);
-    
-    return new Response(
-      JSON.stringify({ error: error.message }),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 500 }
+    // Store in repository_analyses table
+    const supabase = createClient(
+      Deno.env.get('SUPABASE_URL') ?? '',
+      Deno.env.get('SUPABASE_ANON_KEY') ?? ''
     );
+
+    await supabase
+      .from('repository_analyses')
+      .insert({
+        repository_url: repositoryUrl,
+        analysis_result: result
+      });
+
+    // Cache the result
+    analysisCache.set(cacheKey, result);
+
+    return new Response(
+      JSON.stringify(result),
+      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+    );
+
+  } catch (error) {
+    return new Response(JSON.stringify({ error: error.message }), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      status: 400
+    });
   }
 })
 
-// Function to post-process analysis results to ensure all required data is present
-function postProcessAnalysisResults(analysisResult, repositoryContent) {
-  // Make a deep copy to avoid modifying the original
-  const result = JSON.parse(JSON.stringify(analysisResult));
-  
-  // Ensure all fields exist
-  if (!result.ai_components_detected) result.ai_components_detected = [];
-  if (!result.security_risks) result.security_risks = [];
-  if (!result.code_references) result.code_references = [];
-  if (!result.remediation_suggestions) result.remediation_suggestions = [];
-  if (typeof result.confidence_score !== 'number') result.confidence_score = 0.5;
-  
-  // Detect if this is an LLM repository
-  const containsLLM = result.ai_components_detected.some(comp => {
-    const name = (comp.name || '').toLowerCase();
-    const type = (comp.type || '').toLowerCase();
-    return name.includes('llm') || name.includes('gpt') || 
-           name.includes('openai') || name.includes('anthropic') ||
-           type.includes('llm') || type.includes('language model');
-  });
-  
-  // If repository contains LLM components, ensure all six core risk types exist
-  if (containsLLM) {
-    ensureCoreRiskTypes(result);
-  }
-  
-  // Find possible code references from the repository content and link them to risks
-  if (result.code_references.length === 0) {
-    result.code_references = findPotentialCodeReferences(repositoryContent, result.ai_components_detected);
-    linkCodeReferencesToRisks(result);
-  }
-  
-  // Generate remediation suggestions if none exist
-  if (result.remediation_suggestions.length === 0) {
-    result.remediation_suggestions = generateRecommendations(result.security_risks);
-  }
-  
-  // Add OWASP categories to risks
-  enhanceRisksWithOwaspCategories(result.security_risks);
-  
-  return result;
+// Type guard
+function isValidRepositoryContent(content: any): content is RepositoryContent {
+  return content && 
+         typeof content.repositoryName === 'string' &&
+         Array.isArray(content.files) &&
+         content.files.every(file => 
+           typeof file.path === 'string' &&
+           typeof file.content === 'string' &&
+           typeof file.extension === 'string'
+         );
 }
 
-// Function to ensure all six core risk types are present
-function ensureCoreRiskTypes(result) {
-  // The six core risk types for any LLM application
-  const coreRiskTypes = [
-    {
-      risk: "Prompt Injection Vulnerability",
-      severity: "high",
-      description: "User inputs could manipulate the LLM's behavior by altering its prompt instructions, potentially leading to unintended operations or information disclosure.",
-      owasp_category: {
-        id: "LLM01:2025",
-        name: "Prompt Injection",
-        description: "A vulnerability where user inputs manipulate the LLM's behavior by altering its prompts."
-      }
-    },
-    {
-      risk: "Data Leakage via LLM",
-      severity: "medium",
-      description: "LLM responses might inadvertently expose sensitive data or training information if proper data handling mechanisms are not in place.",
-      owasp_category: {
-        id: "LLM02:2025",
-        name: "Sensitive Information Disclosure",
-        description: "Risks involving the exposure of confidential data within the LLM or its applications."
-      }
-    },
-    {
-      risk: "Hallucination",
-      severity: "medium",
-      description: "The LLM may generate incorrect or fabricated information presented as factual, leading to misinformation or unreliable outputs.",
-      owasp_category: {
-        id: "LLM09:2025",
-        name: "Misinformation",
-        description: "The potential for LLMs to generate and propagate false or misleading information."
-      }
-    },
-    {
-      risk: "API Key Exposure",
-      severity: "high",
-      description: "API keys or credentials for LLM services may be exposed in the codebase, leading to unauthorized access or abuse.",
-      owasp_category: {
-        id: "LLM03:2025",
-        name: "Supply Chain",
-        description: "Vulnerabilities arising from the components and dependencies used in LLM development and deployment."
-      }
-    },
-    {
-      risk: "Model Poisoning",
-      severity: "medium",
-      description: "The LLM could be influenced by adversarial inputs or poisoned training data, affecting the quality and safety of outputs.",
-      owasp_category: {
-        id: "LLM04:2025",
-        name: "Data and Model Poisoning",
-        description: "Threats where malicious data is introduced during training, fine-tuning, or embedding processes."
-      }
-    },
-    {
-      risk: "Hardcoded System Prompts",
-      severity: "medium",
-      description: "Hardcoded system prompts in the codebase can reveal sensitive application logic or create vulnerabilities if they contain instructions that could be bypassed.",
-      owasp_category: {
-        id: "LLM07:2025",
-        name: "System Prompt Leakage",
-        description: "The exposure of system-level prompts that can reveal internal configurations or logic."
-      }
-    }
-  ];
-  
-  // Check existing risks and add missing ones
-  for (const coreRisk of coreRiskTypes) {
-    const riskExists = result.security_risks.some(risk => 
-      risk.risk && coreRisk.risk && 
-      risk.risk.toLowerCase().includes(coreRisk.risk.toLowerCase())
-    );
+// Our graph is simple enough to manage without a library
+type CallGraph = {
+  nodes: string[];
+  edges: Array<{
+    from: string;
+    to: string;
+    type: string;
+  }>;
+};
+
+// Main analysis function (to be implemented next)
+async function analyzeRepository(files: RepositoryFile[]): Promise<AnalysisResult> {
+  try {
+    console.log('Starting repository analysis...');
     
-    if (!riskExists) {
-      // Add with empty related_code_references that will be filled later
-      result.security_risks.push({
-        ...coreRisk,
-        related_code_references: []
-      });
-    } else {
-      // Update existing risk to ensure it has OWASP category
-      const existingRisk = result.security_risks.find(risk => 
-        risk.risk && coreRisk.risk && 
-        risk.risk.toLowerCase().includes(coreRisk.risk.toLowerCase())
-      );
-      
-      if (existingRisk && !existingRisk.owasp_category) {
-        existingRisk.owasp_category = coreRisk.owasp_category;
-      }
-      
-      // Ensure related_code_references exists
-      if (!existingRisk.related_code_references) {
-        existingRisk.related_code_references = [];
-      }
-    }
+    // Direct implementation (no need for analyzeRepositoryComponents)
+    const dependencies = extractDependencies(files);
+    const imports = trackImports(files, dependencies);
+    const components = findComponentUsage(files, imports);
+    const risks = identifyRisks(files, components, imports);
+    
+    // Build the call graph
+    const callGraph = buildCallGraph(files, components);
+    
+    // Calculate summary statistics
+    const summary = {
+      totalAIUsage: components.length,
+      risksByLevel: {
+        high: risks.filter(r => r.severity === 'high').length,
+        medium: risks.filter(r => r.severity === 'medium').length,
+        low: risks.filter(r => r.severity === 'low').length
+      },
+      topRisks: risks.slice(0, 3).map(r => r.risk)
+    };
+    
+    // Get repository name from the first file path or use a default
+    const repositoryName = files.length > 0 ? 
+      files[0].path.split('/')[0] || 'unknown-repository' : 
+      'unknown-repository';
+    
+    return {
+      repositoryName,
+      timestamp: new Date().toISOString(),
+      aiComponents: components,
+      securityRisks: risks,
+      callGraph,
+      summary
+    };
+  } catch (error) {
+    console.error('Error in repository analysis:', error);
+    throw error;
   }
 }
 
-// Function to enhance risks with OWASP categories
-function enhanceRisksWithOwaspCategories(securityRisks) {
-  // OWASP LLM Top 10 category mapping
-  const owaspCategoryMap = {
-    "prompt injection": {
-      id: "LLM01:2025",
-      name: "Prompt Injection",
-      description: "A vulnerability where user inputs manipulate the LLM's behavior by altering its prompts."
-    },
-    "sensitive information disclosure": {
-      id: "LLM02:2025", 
-      name: "Sensitive Information Disclosure",
-      description: "Risks involving the exposure of confidential data within the LLM or its applications."
-    },
-    "supply chain": {
-      id: "LLM03:2025",
-      name: "Supply Chain", 
-      description: "Vulnerabilities arising from the components and dependencies used in LLM development and deployment."
-    },
-    "data and model poisoning": {
-      id: "LLM04:2025",
-      name: "Data and Model Poisoning",
-      description: "Threats where malicious data is introduced during training, fine-tuning, or embedding processes."
-    },
-    "improper output handling": {
-      id: "LLM05:2025", 
-      name: "Improper Output Handling",
-      description: "Issues stemming from inadequate validation, sanitization, or escaping of LLM outputs."
-    },
-    "excessive agency": {
-      id: "LLM06:2025",
-      name: "Excessive Agency",
-      description: "Concerns related to LLM systems being granted more autonomy than intended, leading to unintended actions."
-    },
-    "system prompt leakage": {
-      id: "LLM07:2025",
-      name: "System Prompt Leakage",
-      description: "The exposure of system-level prompts that can reveal internal configurations or logic."
-    },
-    "vector and embedding weaknesses": {
-      id: "LLM08:2025",
-      name: "Vector and Embedding Weaknesses",
-      description: "Security risks associated with the use of vectors and embeddings in LLM systems."
-    },
-    "misinformation": {
-      id: "LLM09:2025",
-      name: "Misinformation",
-      description: "The potential for LLMs to generate and propagate false or misleading information."
-    },
-    "unbounded consumption": {
-      id: "LLM10:2025",
-      name: "Unbounded Consumption",
-      description: "Scenarios where LLMs consume resources without limits, potentially leading to denial of service."
-    },
-    // Common aliases
-    "data leakage": {
-      id: "LLM02:2025",
-      name: "Sensitive Information Disclosure",
-      description: "Risks involving the exposure of confidential data within the LLM or its applications."
-    },
-    "hallucination": {
-      id: "LLM09:2025",
-      name: "Misinformation",
-      description: "The potential for LLMs to generate and propagate false or misleading information."
-    },
-    "api key exposure": {
-      id: "LLM03:2025",
-      name: "Supply Chain",
-      description: "Vulnerabilities arising from the components and dependencies used in LLM development and deployment."
-    },
-    "model poisoning": {
-      id: "LLM04:2025",
-      name: "Data and Model Poisoning",
-      description: "Threats where malicious data is introduced during training, fine-tuning, or embedding processes."
-    },
-    "hardcoded system prompts": {
-      id: "LLM07:2025",
-      name: "System Prompt Leakage",
-      description: "The exposure of system-level prompts that can reveal internal configurations or logic."
+// Add the missing detectScope function
+function detectScope(lines: string[], lineIndex: number): string {
+  // Simple scope detection - look for function or class definitions above the current line
+  for (let i = lineIndex; i >= 0; i--) {
+    const line = lines[i];
+    // Match function definitions in various languages
+    if (/^\s*(function|def|class|const\s+\w+\s*=\s*\(|async\s+function)\s+(\w+)/.test(line)) {
+      const match = line.match(/^\s*(function|def|class|const\s+\w+\s*=\s*\(|async\s+function)\s+(\w+)/);
+      return match ? match[2] : "Unknown";
     }
+  }
+  return "Global";
+}
+
+// Helper to check if a file has a vector DB component
+function hasVectorDBComponent(components: AIComponent[], filePath: string): boolean {
+  return components.some(component => 
+    component.type === 'Vector Database' && 
+    component.locations.some(loc => loc.file === filePath)
+  );
+}
+
+//  GitHub API utilities 
+async function fetchRepositoryContent(url: string): Promise<RepositoryContent> {
+  // Parse GitHub URL
+  const match = url.match(/github\.com\/([^/]+)\/([^/]+)/);
+  if (!match) {
+    throw new Error('Invalid GitHub repository URL');
+  }
+
+  const [_, owner, repo] = match;
+  const branch = 'main'; // Could make this configurable
+
+  try {
+    // Use the public API (no auth required)
+    const response = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`
+    );
+
+    console.log('GitHub API Response:', {
+      status: response.status,
+      headers: Object.fromEntries(response.headers.entries()),
+    });
+
+    if (!response.ok) {
+      if (response.status === 403) {
+        throw new Error('GitHub API rate limit exceeded. Please try again later.');
+      }
+      throw new Error(`GitHub API error: ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    
+    // Add logging for file filtering
+    const relevantFiles = data.tree.filter(item => {
+      const isRelevant = item.type === 'blob' && (
+        item.path.endsWith('.py') ||
+        item.path.endsWith('.js') ||
+        item.path.endsWith('.ts') ||
+        item.path.endsWith('.tsx') ||
+        item.path.endsWith('.jsx') ||
+        item.path.endsWith('requirements.txt') ||
+        item.path.endsWith('package.json')
+      );
+      console.log(`File ${item.path}: ${isRelevant ? 'relevant' : 'skipped'}`);
+      return isRelevant;
+    });
+
+    // Fetch raw content directly (no auth needed)
+    const files = await Promise.all(
+      relevantFiles.map(async file => {
+        try {
+          const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${file.path}`;
+          const contentResponse = await fetch(rawUrl);
+
+          if (!contentResponse.ok) {
+            console.error(`Failed to fetch ${file.path}: ${contentResponse.statusText}`);
+            return null;
+          }
+
+          const content = await contentResponse.text();
+          return {
+            path: file.path,
+            content,
+            extension: '.' + file.path.split('.').pop()
+          };
+        } catch (error) {
+          console.error(`Error fetching ${file.path}:`, error);
+          return null;
+        }
+      })
+    );
+
+    return {
+      repositoryName: `${owner}/${repo}`,
+      files: files.filter((f): f is RepositoryFile => f !== null)
+    };
+  } catch (error) {
+    throw new Error(`Failed to fetch repository: ${error.message}`);
+  }
+}
+
+// Example JSON Output Format (moved to bottom)
+/*
+{
+  "repositoryName": "example/ai-project",
+  "timestamp": "2024-03-19T15:30:45.123Z",
+  "aiComponents": [
+    {
+      "name": "langchain",
+      "type": "LLM Framework",
+      "confidence": 0.95,
+      "detectionMethod": "package",
+      "locations": [
+        {
+          "file": "requirements.txt",
+          "line": 1,
+          "snippet": "langchain==0.1.0",
+          "context": {
+            "before": [],
+            "after": ["openai>=1.0.0"],
+            "scope": "Global"
+          }
+        }
+      ]
+    },
+    {
+      "name": "openai",
+      "type": "LLM API",
+      "confidence": 0.9,
+      "detectionMethod": "import",
+      "locations": [
+        {
+          "file": "src/chat.py",
+          "line": 45,
+          "snippet": "from openai import ChatCompletion",
+          "context": {
+            "before": ["import os"],
+            "after": ["from dotenv import load_dotenv"],
+            "scope": "Global"
+          }
+        }
+      ]
+    }
+  ],
+  "securityRisks": [
+    {
+      "risk": "Direct Model Usage",
+      "severity": "high",
+      "description": "Direct usage of GPT-4 model detected",
+      "owaspCategory": {
+        "id": "LLM01:2025",
+        "name": "Prompt Injection",
+        "description": "Occurs when user inputs alter the LLM's behavior or output in unintended ways."
+      },
+      "relatedComponents": ["openai"],
+      "evidence": [
+        {
+          "file": "src/chat.py",
+          "line": 46,
+          "snippet": "response = ChatCompletion.create(model='gpt-4')",
+          "context": {
+            "before": ["def generate_response(prompt):"],
+            "after": ["    return response.choices[0].message"],
+            "scope": "generate_response"
+          }
+        }
+      ],
+      "confidence": 0.95
+    }
+  ],
+  "callGraph": {
+    "nodes": ["src/main.py", "src/chat.py", "src/prompts.py"],
+    "edges": [
+      {
+        "from": "src/main.py",
+        "to": "src/chat.py",
+        "type": "import"
+      },
+      {
+        "from": "src/chat.py",
+        "to": "src/prompts.py",
+        "type": "import"
+      }
+    ]
+  },
+  "summary": {
+    "totalAIUsage": 2,
+    "risksByLevel": {
+      "high": 1,
+      "medium": 2,
+      "low": 0
+    },
+    "topRisks": [
+      "Direct Model Usage",
+      "System Prompt Exposure",
+      "Vector Database Access"
+    ]
+  }
+}
+*/ 
+
+function categorizeRisk(context: {
+  hasRag: boolean;
+  hasEmbeddings: boolean;
+  hasSystemPrompt: boolean;
+  hasVectorDB: boolean;
+  directModelUsage: boolean;
+  modelType: string;
+}): typeof OWASP_LLM_CATEGORIES[keyof typeof OWASP_LLM_CATEGORIES] {
+
+  // LLM02: Sensitive Information Disclosure
+  if (context.hasRag && context.hasVectorDB) {
+    return OWASP_LLM_CATEGORIES.SENSITIVE_INFORMATION_DISCLOSURE;
+  }
+
+  // LLM04: Data and Model Poisoning
+  if (context.hasEmbeddings) {
+    return OWASP_LLM_CATEGORIES.DATA_AND_MODEL_POISONING;
+  }
+
+  // LLM07: System Prompt Leakage
+  if (context.hasSystemPrompt) {
+    return OWASP_LLM_CATEGORIES.SYSTEM_PROMPT_LEAKAGE;
+  }
+
+  // LLM08: Vector/Embedding Weaknesses
+  if (context.hasVectorDB) {
+    return OWASP_LLM_CATEGORIES.VECTOR_AND_EMBEDDING_WEAKNESSES;
+  }
+
+  // LLM01: Prompt Injection (default for direct model usage)
+  if (context.directModelUsage) {
+    return OWASP_LLM_CATEGORIES.PROMPT_INJECTION;
+  }
+
+  // Default fallback
+  return OWASP_LLM_CATEGORIES.PROMPT_INJECTION;
+} 
+
+// Add to the types section
+type RiskContext = {
+  code: string;
+  imports: string[];
+  modelUsage: string[];
+  systemPrompts: string[];
+  vectorStores: string[];
+  embeddings: string[];
+  packageDependencies: string[];
+};
+
+async function analyzeSecurityRisk(risk: SecurityRisk, context: RiskContext): Promise<typeof OWASP_LLM_CATEGORIES[keyof typeof OWASP_LLM_CATEGORIES]> {
+  const prompt = `
+As a security expert, analyze this AI security risk and categorize it according to the OWASP LLM Top 10 2025.
+Consider all context carefully.
+
+Risk: ${risk.risk}
+Description: ${risk.description}
+Severity: ${risk.severity}
+
+Context:
+- Imports: ${context.imports.join(', ')}
+- Model Usage: ${context.modelUsage.join(', ')}
+- System Prompts Found: ${context.systemPrompts.join(', ')}
+- Vector Stores: ${context.vectorStores.join(', ')}
+- Embeddings: ${context.embeddings.join(', ')}
+- Dependencies: ${context.packageDependencies.join(', ')}
+
+Code Evidence:
+${risk.evidence.map(e => `${e.file}:${e.line} - ${e.snippet}`).join('\n')}
+
+OWASP LLM Categories:
+${Object.entries(OWASP_LLM_CATEGORIES).map(([key, cat]) => 
+  `${cat.id}: ${cat.name} - ${cat.description}`
+).join('\n')}
+
+Return only the category ID that best matches this risk.
+`;
+
+  // Call GPT-4 for analysis
+  const category = await callGPT4(prompt);
+  
+  // Map the response back to our categories
+  const matchedCategory = Object.values(OWASP_LLM_CATEGORIES)
+    .find(cat => cat.id === category.trim());
+
+  return matchedCategory || OWASP_LLM_CATEGORIES.PROMPT_INJECTION;
+} 
+
+async function callGPT4(prompt: string): Promise<string> {
+  const openaiApiKey = Deno.env.get('OPENAI_API_KEY');
+  if (!openaiApiKey) {
+    throw new Error('OpenAI API key not configured');
+  }
+
+  const configuration = new Configuration({ apiKey: openaiApiKey });
+  const openai = new OpenAIApi(configuration);
+
+  try {
+    const response = await openai.createChatCompletion({
+      model: "gpt-4",
+      messages: [
+        {
+          role: "system",
+          content: "You are a security expert specializing in LLM applications. Analyze risks and categorize them according to OWASP LLM Top 10 2025. Respond only with the category ID."
+        },
+        {
+          role: "user",
+          content: prompt
+        }
+      ],
+      temperature: 0.1, // Low temperature for consistent categorization
+      max_tokens: 10   // We only need the category ID
+    });
+
+    const category = response.data.choices[0]?.message?.content?.trim() || "LLM01:2025";
+    console.log('GPT-4 categorized risk as:', category);
+    return category;
+  } catch (error) {
+    console.error('Error calling GPT-4:', error);
+    // Fallback to Prompt Injection category if GPT-4 call fails
+    return "LLM01:2025";
+  }
+} 
+
+function extractDependencies(files: RepositoryFile[]): Map<string, string[]> {
+  const dependencyMap = new Map<string, string[]>();
+  
+  // Known mappings between package names and import names
+  const packageToImportMap: Record<string, string[]> = {
+    'pinecone-client': ['pinecone'],
+    'langchain': ['langchain'],
+    'openai': ['openai'],
+    'anthropic': ['anthropic'],
+    '@google/generative-ai': ['google-generative-ai', 'googleGenerativeAI'],
+    // Add more mappings as needed
   };
   
-  // Apply OWASP categories to each risk
-  for (const risk of securityRisks) {
-    if (!risk.owasp_category && risk.risk) {
-      const riskLower = risk.risk.toLowerCase();
+  // Check package.json, requirements.txt, etc.
+  for (const file of files) {
+    if (file.path.endsWith('package.json')) {
+      try {
+        const packageJson = JSON.parse(file.content);
+        const allDeps = {
+          ...(packageJson.dependencies || {}),
+          ...(packageJson.devDependencies || {})
+        };
+        
+        for (const [pkg, version] of Object.entries(allDeps)) {
+          if (packageToImportMap[pkg]) {
+            dependencyMap.set(pkg, packageToImportMap[pkg]);
+          }
+        }
+      } catch (e) {
+        console.error('Error parsing package.json:', e);
+      }
+    }
+    
+    if (file.path.endsWith('requirements.txt')) {
+      const lines = file.content.split('\n');
+      for (const line of lines) {
+        // Extract package name from requirements.txt line
+        const match = line.match(/^([a-zA-Z0-9_-]+)([><=~]|$)/);
+        if (match && packageToImportMap[match[1]]) {
+          dependencyMap.set(match[1], packageToImportMap[match[1]]);
+        }
+      }
+    }
+  }
+  
+  return dependencyMap;
+}
+
+function trackImports(files: RepositoryFile[], dependencies: Map<string, string[]>): Map<string, Set<string>> {
+  // Map of file paths to sets of imported modules and their aliases
+  const importMap = new Map<string, Set<string>>();
+  
+  // Flattened list of all possible import names to look for
+  const allImportNames = Array.from(dependencies.values()).flat();
+  
+  for (const file of files) {
+    const importSet = new Set<string>();
+    
+    // Different import patterns for different languages
+    if (file.extension === '.py') {
+      // Python imports
+      const importRegexes = [
+        /from\s+([a-zA-Z0-9_.]+)\s+import\s+([^#\n]+)/g,  // from X import Y
+        /import\s+([^#\n]+)/g  // import X
+      ];
       
-      // Find matching category
-      for (const [key, category] of Object.entries(owaspCategoryMap)) {
-        if (riskLower.includes(key)) {
-          risk.owasp_category = category;
+      for (const regex of importRegexes) {
+        const matches = [...file.content.matchAll(regex)];
+        for (const match of matches) {
+          const importPath = match[1];
+          
+          // Check if this import matches any of our target dependencies
+          if (allImportNames.some(name => importPath.includes(name))) {
+            importSet.add(importPath);
+            
+            // If it's a "from X import Y" pattern, also track the imported items
+            if (match[2]) {
+              const importedItems = match[2].split(',').map(item => item.trim().split(' as ')[0]);
+              for (const item of importedItems) {
+                importSet.add(item);
+              }
+            }
+          }
+        }
+      }
+    } else if (['.js', '.ts', '.jsx', '.tsx'].includes(file.extension)) {
+      // JavaScript/TypeScript imports
+      const importRegexes = [
+        /import\s+(?:{\s*([^}]+)\s*}|([^;]+))\s+from\s+['"]([^'"]+)['"]/g,  // import { X } from 'Y' or import X from 'Y'
+        /const\s+([a-zA-Z0-9_]+)\s+=\s+require\(['"]([^'"]+)['"]\)/g  // const X = require('Y')
+      ];
+      
+      for (const regex of importRegexes) {
+        const matches = [...file.content.matchAll(regex)];
+        for (const match of matches) {
+          const importPath = match[3] || match[2];
+          
+          // Check if this import matches any of our target dependencies
+          if (allImportNames.some(name => importPath?.includes(name))) {
+            importSet.add(importPath);
+            
+            // If it's a destructured import, also track the imported items
+            if (match[1]) {
+              const importedItems = match[1].split(',').map(item => item.trim().split(' as ')[0]);
+              for (const item of importedItems) {
+                importSet.add(item);
+              }
+            }
+            
+            // If it's a default import or require, track the variable name
+            if (match[2] || match[1]) {
+              importSet.add(match[2] || match[1]);
+            }
+          }
+        }
+      }
+    }
+    
+    if (importSet.size > 0) {
+      importMap.set(file.path, importSet);
+    }
+  }
+  
+  return importMap;
+}
+
+function findComponentUsage(files: RepositoryFile[], imports: Map<string, Set<string>>): AIComponent[] {
+  const components: AIComponent[] = [];
+  const componentMap = new Map<string, AIComponent>();
+  
+  // Component type classification
+  const componentTypes: Record<string, string> = {
+    'pinecone': 'Vector Database',
+    'openai': 'LLM Provider',
+    'anthropic': 'LLM Provider',
+    'langchain': 'LLM Framework',
+    // Add more as needed
+  };
+  
+  for (const [filePath, importSet] of imports.entries()) {
+    const file = files.find(f => f.path === filePath);
+    if (!file) continue;
+    
+    const lines = file.content.split('\n');
+    
+    // Look for actual usage of imported modules
+    for (const importName of importSet) {
+      // Skip common words that might cause false positives
+      if (['from', 'import', 'as'].includes(importName)) continue;
+      
+      // Determine component type
+      let componentType = 'Library';
+      for (const [pattern, type] of Object.entries(componentTypes)) {
+        if (importName.toLowerCase().includes(pattern)) {
+          componentType = type;
           break;
         }
       }
       
-      // Default to Improper Output Handling if no match found
-      if (!risk.owasp_category) {
-        risk.owasp_category = owaspCategoryMap["improper output handling"];
-      }
-    }
-  }
-}
-
-// Function to find potential code references in repository
-function findPotentialCodeReferences(repositoryContent, aiComponents) {
-  const codeReferences = [];
-  let refId = 1;
-  
-  // Get list of AI component names to search for
-  const componentKeywords = aiComponents.map(comp => comp.name?.toLowerCase()).filter(Boolean);
-  
-  // More specific AI-related patterns
-  const aiPatterns = {
-    modelInvocation: [
-      /\.generate\s*\(/i,
-      /\.create(?:Completion|ChatCompletion)\s*\(/i,
-      /\.complete\s*\(/i,
-      /\.predict\s*\(/i,
-      /\.embed(?:ding)?\s*\(/i
-    ],
-    configPatterns: [
-      /temperature\s*[:=]\s*[0-9.]+/,
-      /max_tokens\s*[:=]\s*\d+/,
-      /top[_-]?[pk]\s*[:=]\s*[0-9.]+/
-    ],
-    promptPatterns: [
-      /system_prompt\s*[:=]\s*[`'"]/i,
-      /user_prompt\s*[:=]\s*[`'"]/i,
-      /messages\s*[:=]\s*\[\s*{\s*role:/i
-    ]
-  };
-
-  // Scan through repository files
-  for (const file of repositoryContent.files) {
-    // Skip binary or extremely large files
-    if (!file.content || file.content.length > 100000) continue;
-    
-    // Focus on code files
-    const codeExtensions = ['.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.go', '.php', '.rb'];
-    const isCodeFile = codeExtensions.some(ext => file.path.endsWith(ext));
-    
-    if (!isCodeFile) continue;
-
-    const lines = file.content.split('\n');
-    let contextBuffer = []; // Store previous lines for context
-    
-    lines.forEach((line, index) => {
-      const lineNumber = index + 1;
-      const lowerLine = line.toLowerCase();
-      
-      // Update context buffer
-      contextBuffer.push(line);
-      if (contextBuffer.length > 5) contextBuffer.shift();
-      
-      // Check for actual AI component usage (not just imports)
-      const hasModelInvocation = aiPatterns.modelInvocation.some(pattern => pattern.test(line));
-      const hasConfigPattern = aiPatterns.configPatterns.some(pattern => pattern.test(line));
-      const hasPromptPattern = aiPatterns.promptPatterns.some(pattern => pattern.test(line));
-      
-      // Calculate confidence based on context
-      let confidence = 0;
-      let referenceType = null;
-      
-      if (hasModelInvocation) {
-        confidence = 0.9;
-        referenceType = 'model_invocation';
-      } else if (hasPromptPattern) {
-        confidence = 0.8;
-        referenceType = 'prompt_definition';
-      } else if (hasConfigPattern) {
-        confidence = 0.7;
-        referenceType = 'model_config';
-      }
-      
-      // Only add high-confidence references
-      if (confidence > 0.6) {
-        codeReferences.push({
-          id: `ref_${refId++}`,
-          file: file.path,
-          line: lineNumber,
-          snippet: line.trim(),
-          context: contextBuffer.join('\n'),
-          type: referenceType,
-          confidence: confidence,
-          verified: true
+      // Look for instantiation or usage
+      const usageLines = lines
+        .map((line, idx) => ({ line, idx }))
+        .filter(({ line }) => {
+          // Match patterns like: new X(), X(), X.method(), const y = X
+          const pattern = new RegExp(`(new\\s+${importName}|${importName}\\s*\\(|${importName}\\.[a-zA-Z]+|=\\s*${importName})`, 'i');
+          return pattern.test(line);
         });
-      }
       
-      // Special handling for credential exposure (higher precision)
-      if (lowerLine.match(/(?:api[_-]?key|secret|password|token)\s*[:=]\s*['"`][^'"`]+['"`]/i)) {
-        // Skip if it's in an enum or constant definition
-        if (lowerLine.match(/enum\s+|const\s+.*?=\s*{/i)) {
-          return;
+      if (usageLines.length > 0) {
+        // Create or update component
+        const componentName = importName;
+        if (!componentMap.has(componentName)) {
+          componentMap.set(componentName, {
+            name: componentName,
+            type: componentType,
+            confidence: 0.95,
+            detectionMethod: 'usage',
+            locations: []
+          });
         }
-        // Skip if it's a template/example
-        if (lowerLine.match(/example|template|your.*?here|placeholder/i)) {
-          return;
+        
+        // Add usage locations (limit to 3 most relevant)
+        const component = componentMap.get(componentName)!;
+        for (const { line, idx } of usageLines.slice(0, 3)) {
+          component.locations.push({
+            file: filePath,
+            line: idx + 1,
+            snippet: line.trim(),
+            context: {
+              before: lines.slice(Math.max(0, idx - 2), idx),
+              after: lines.slice(idx + 1, Math.min(lines.length, idx + 3)),
+              scope: detectScope(lines, idx)
+            }
+          });
         }
-        // Skip if it's referencing environment variables
-        if (lowerLine.match(/process\.env|os\.environ|getenv|config\./i)) {
-          return;
-        }
-        // Only then add as credential exposure
-        codeReferences.push({
-          id: `ref_${refId++}`,
-          file: file.path,
-          line: lineNumber,
-          snippet: line.trim(),
-          context: contextBuffer.join('\n'),
-          type: 'credential_exposure',
-          confidence: 0.95,
-          verified: true
-        });
       }
-    });
-  }
-  
-  // Post-process to remove duplicates and near-duplicates
-  return deduplicateReferences(codeReferences);
-}
-
-// Helper function to deduplicate references
-function deduplicateReferences(references) {
-  const seen = new Set();
-  return references.filter(ref => {
-    // Create a signature based on file, type, and normalized snippet
-    const signature = `${ref.file}:${ref.type}:${normalizeSnippet(ref.snippet)}`;
-    if (seen.has(signature)) return false;
-    seen.add(signature);
-    return true;
-  });
-}
-
-// Helper to normalize code snippets for comparison
-function normalizeSnippet(snippet) {
-  return snippet
-    .toLowerCase()
-    .replace(/\s+/g, ' ')
-    .replace(/['"`]/g, '"')
-    .trim();
-}
-
-// Function to link code references to security risks
-function linkCodeReferencesToRisks(result) {
-  // Ensure code references exist
-  if (!result.code_references || result.code_references.length === 0) {
-    return;
-  }
-  
-  // Link each risk to relevant code references
-  for (const risk of result.security_risks) {
-    if (!risk.related_code_references) {
-      risk.related_code_references = [];
     }
+  }
+  
+  return Array.from(componentMap.values());
+}
+
+function identifyRisks(files: RepositoryFile[], components: AIComponent[], imports: Map<string, Set<string>>): SecurityRisk[] {
+  const risks: SecurityRisk[] = [];
+  const riskMap = new Map<string, SecurityRisk>();
+  
+  // Check for vector database + LLM combination (RAG pattern)
+  const vectorDBComponents = components.filter(c => c.type === 'Vector Database');
+  const llmComponents = components.filter(c => c.type === 'LLM Provider');
+  
+  if (vectorDBComponents.length > 0 && llmComponents.length > 0) {
+    // We have a RAG pattern - look for specific risks
     
-    // Match code references to risks based on risk type
-    const riskLower = risk.risk.toLowerCase();
+    // 1. RAG Prompt Injection risk
+    const promptInjectionRisk: SecurityRisk = {
+      risk: "RAG Prompt Injection",
+      severity: "high",
+      description: "User input is used in RAG queries without proper sanitization",
+      owaspCategory: OWASP_LLM_CATEGORIES.PROMPT_INJECTION,
+      relatedComponents: vectorDBComponents.map(c => c.name),
+      evidence: [],
+      confidence: 0.9
+    };
     
-    for (const ref of result.code_references) {
-      // Link based on risk type
-      if (riskLower.includes('prompt injection') && ref.model_invocation) {
-        if (!risk.related_code_references.includes(ref.id)) {
-          risk.related_code_references.push(ref.id);
-        }
-      }
-      else if (riskLower.includes('data leakage') && ref.model_invocation) {
-        if (!risk.related_code_references.includes(ref.id)) {
-          risk.related_code_references.push(ref.id);
-        }
-      }
-      else if (riskLower.includes('hallucination') && ref.model_invocation) {
-        if (!risk.related_code_references.includes(ref.id)) {
-          risk.related_code_references.push(ref.id);
-        }
-      }
-      else if ((riskLower.includes('api key') || riskLower.includes('credential')) && ref.credential_exposure) {
-        if (!risk.related_code_references.includes(ref.id)) {
-          risk.related_code_references.push(ref.id);
-        }
-      }
-      else if (riskLower.includes('model poisoning') && ref.model_invocation) {
-        if (!risk.related_code_references.includes(ref.id)) {
-          risk.related_code_references.push(ref.id);
-        }
-      }
-      else if ((riskLower.includes('system prompt') || riskLower.includes('hardcoded prompt')) && ref.prompt_definition) {
-        if (!risk.related_code_references.includes(ref.id)) {
-          risk.related_code_references.push(ref.id);
-        }
-      }
-    }
-  }
-}
-
-// Function to generate remediation recommendations
-function generateRecommendations(securityRisks) {
-  const recommendations = [];
-  
-  // Add specific recommendations based on risk types
-  for (const risk of securityRisks) {
-    const riskLower = risk.risk.toLowerCase();
-    
-    if (riskLower.includes('prompt injection')) {
-      recommendations.push("Sanitize and validate all user inputs before including them in LLM prompts");
-      recommendations.push("Use input formatting techniques to clearly separate instructions from user input");
-      recommendations.push("Consider implementing a prompt validation layer to detect potential injection attempts");
-    }
-    else if (riskLower.includes('data leakage')) {
-      recommendations.push("Implement proper data filtering and sanitization before sending to LLM");
-      recommendations.push("Use a retrieval filtering mechanism to prevent sensitive data from being included in context");
-      recommendations.push("Consider implementing LLM guardrails to detect and prevent potential data leakage");
-    }
-    else if (riskLower.includes('hallucination')) {
-      recommendations.push("Implement fact-checking mechanisms for critical information");
-      recommendations.push("Set appropriate model parameters to reduce hallucination (lower temperature, higher top_p)");
-      recommendations.push("Consider source attribution in outputs to help users validate information");
-    }
-    else if (riskLower.includes('api key') || riskLower.includes('credential')) {
-      recommendations.push("Replace hardcoded API keys and credentials with environment variables or a secure secret management solution");
-      recommendations.push("Implement a secrets manager or environment variable solution for credential management");
-    }
-    else if (riskLower.includes('model poisoning')) {
-      recommendations.push("Validate and sanitize all training data before fine-tuning models");
-      recommendations.push("Implement monitoring for unexpected model behavior");
-      recommendations.push("Consider using models from trusted providers with established safety measures");
-    }
-    else if (riskLower.includes('system prompt') || riskLower.includes('hardcoded prompt')) {
-      recommendations.push("Store system prompts in a secure configuration system rather than hardcoding them");
-      recommendations.push("Keep prompt templates separate from the application logic");
-      recommendations.push("Consider encrypting sensitive prompt elements");
-    }
-  }
-  
-  // Add general recommendations
-  if (!recommendations.some(r => r.includes("rate limiting"))) {
-    recommendations.push("Implement rate limiting for all AI API calls");
-  }
-  
-  if (!recommendations.some(r => r.includes("input validation"))) {
-    recommendations.push("Add input validation and sanitization for all user inputs used in AI contexts");
-  }
-  
-  // Deduplicate recommendations
-  return [...new Set(recommendations)];
-}
-
-// Function to analyze a repository using OpenAI
-async function analyzeRepository(repositoryContent, options = {}) {
-  if (!openaiApiKey) {
-    throw new Error('OpenAI API key is not configured.');
-  }
-
-  const systemPrompt = options.systemPrompt || `Analyze the GitHub repository and provide insights about AI components and security risks.`;
-  
-  // Analyze repository to identify files with metadata (requirements.txt, package.json)
-  const metadataFiles = identifyMetadataFiles(repositoryContent.files);
-  console.log(`Found ${metadataFiles.length} metadata files`);
-  
-  // Extract AI components from metadata files (pre-processing)
-  const aiComponentsFromMetadata = extractAIComponentsFromMetadata(metadataFiles);
-  console.log(`Pre-extracted ${aiComponentsFromMetadata.length} AI components from metadata files`);
-
-  // Prepare files for OpenAI analysis - prioritize important files and limit total size
-  const filesToAnalyze = prioritizeFilesForAnalysis(repositoryContent.files, aiComponentsFromMetadata);
-  
-  // Prepare the messages for OpenAI
-  const messages = [
-    {
-      "role": "system",
-      "content": systemPrompt
-    },
-    {
-      "role": "user",
-      "content": formatRepositoryForAnalysis(repositoryContent.repositoryName, filesToAnalyze, aiComponentsFromMetadata)
-    }
-  ];
-
-  try {
-    // Call OpenAI API with proper error handling and retries
-    const response = await fetchWithRetry('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${openaiApiKey}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: "gpt-4-0125-preview", // Using the preview model as it's often less busy
-        messages: messages,
-        temperature: 0.2,
-        max_tokens: 4000,
-        response_format: { type: "json_object" }
-      })
-    }, 2); // Retry up to 2 times
-
-    if (!response.ok) {
-      const errorData = await response.text();
-      console.error("OpenAI API error:", errorData);
-      
-      // Check for rate limit error (429)
-      if (response.status === 429) {
-        throw new Error(`OpenAI API error: 429`);
-      }
-      
-      throw new Error(`OpenAI API error: ${response.status}`);
-    }
-
-    const result = await response.json();
-    
-    try {
-      // Parse the content as JSON
-      const analysisResult = JSON.parse(result.choices[0].message.content);
-      
-      // Fill in pre-extracted AI components if OpenAI didn't find any
-      if (!analysisResult.ai_components_detected || analysisResult.ai_components_detected.length === 0) {
-        analysisResult.ai_components_detected = aiComponentsFromMetadata.map(component => ({
-          name: component.name,
-          type: component.type || "Library",
-          confidence: 0.9
-        }));
-      }
-      
-      return analysisResult;
-    } catch (error) {
-      console.error("Error parsing OpenAI response:", error);
-      throw new Error("Error parsing the analysis result from OpenAI.");
-    }
-  } catch (error) {
-    console.error("Error in OpenAI API call:", error);
-    throw error; // Propagate the error to be handled by the caller
-  }
-}
-
-// Helper function for fetch with retry
-async function fetchWithRetry(url, options, retries = 3, backoff = 300) {
-  try {
-    return await fetch(url, options);
-  } catch (err) {
-    if (retries <= 0) {
-      throw err;
-    }
-    
-    // Wait before retrying
-    await new Promise(resolve => setTimeout(resolve, backoff));
-    
-    // Retry with exponential backoff
-    return fetchWithRetry(url, options, retries - 1, backoff * 2);
-  }
-}
-
-// Fallback analysis when OpenAI is not available
-function generateFallbackAnalysis(repositoryContent, extractedComponents) {
-  console.log('Generating fallback analysis');
-  
-  // Extract metadata files and AI components
-  const metadataFiles = identifyMetadataFiles(repositoryContent.files);
-  const aiComponentsFromMetadata = extractAIComponentsFromMetadata(metadataFiles);
-  
-  // Find code references using direct pattern matching
-  const codeReferences = findCodeReferences(repositoryContent.files, aiComponentsFromMetadata);
-  
-  // Identify security risks based on components and patterns
-  const securityRisks = identifySecurityRisks(repositoryContent.files, aiComponentsFromMetadata, codeReferences);
-  
-  // Post-process to add OWASP categories
-  enhanceRisksWithOwaspCategories(securityRisks);
-  
-  // Ensure all core risks are present if LLM components are detected
-  const hasLLM = aiComponentsFromMetadata.some(comp => 
-    comp.name.toLowerCase() === 'openai' || 
-    comp.name.toLowerCase().includes('llm') ||
-    comp.name.toLowerCase().includes('gpt') ||
-    comp.name.toLowerCase() === 'langchain'
-  );
-  
-  const analysisResult = {
-    ai_components_detected: aiComponentsFromMetadata.map(component => ({
-      name: component.name,
-      type: component.type || "Library",
+    // 2. RAG Data Leakage risk
+    const dataLeakageRisk: SecurityRisk = {
+      risk: "RAG Data Leakage",
+      severity: "medium",
+      description: "RAG implementation may leak sensitive information through vector retrieval",
+      owaspCategory: OWASP_LLM_CATEGORIES.VECTOR_AND_EMBEDDING_WEAKNESSES,
+      relatedComponents: vectorDBComponents.map(c => c.name),
+      evidence: [],
       confidence: 0.85
-    })),
-    security_risks: securityRisks,
-    code_references: codeReferences,
-    confidence_score: 0.75,
-    remediation_suggestions: generateRecommendations(securityRisks),
-    analysis_method: "Pattern-based (OpenAI API unavailable)"
-  };
-  
-  // Make sure all fundamental LLM risks are present if LLM components are detected
-  if (hasLLM) {
-    ensureCoreRiskTypes(analysisResult);
-    linkCodeReferencesToRisks(analysisResult);
-  }
-  
-  return analysisResult;
-}
-
-// Extract components directly from repository
-function extractComponentsFromRepository(repositoryContent) {
-  const metadataFiles = identifyMetadataFiles(repositoryContent.files);
-  return extractAIComponentsFromMetadata(metadataFiles);
-}
-
-// Function to find code references using pattern matching
-function findCodeReferences(files, aiComponents) {
-  const codeReferences = [];
-  let refId = 1;
-  
-  // Get names of AI components to search for
-  const componentNames = aiComponents.map(comp => comp.name.toLowerCase());
-  
-  files.forEach(file => {
-    // Focus on Python, JavaScript, and other code files
-    if (!['.py', '.js', '.ts', '.jsx', '.tsx', '.java'].includes(file.extension)) {
-      return;
+    };
+    
+    // Find evidence for these risks
+    for (const file of files) {
+      const filePath = file.path;
+      const importSet = imports.get(filePath);
+      if (!importSet) continue;
+      
+      const lines = file.content.split('\n');
+      
+      // Check for vector DB query operations with user input
+      if (vectorDBComponents.some(c => c.locations.some(loc => loc.file === filePath))) {
+        // This file uses a vector DB - look for query operations
+        const queryLines = lines
+          .map((line, idx) => ({ line, idx }))
+          .filter(({ line }) => 
+            /\.query\s*\(/.test(line) && 
+            /user|input|prompt|message|text/.test(line) &&
+            !/sanitize|validate|clean/.test(line.toLowerCase())
+          );
+          
+        if (queryLines.length > 0) {
+          for (const { line, idx } of queryLines) {
+            promptInjectionRisk.evidence.push({
+              file: filePath,
+              line: idx + 1,
+              snippet: line.trim(),
+              context: {
+                before: lines.slice(Math.max(0, idx - 2), idx),
+                after: lines.slice(idx + 1, Math.min(lines.length, idx + 3)),
+                scope: detectScope(lines, idx)
+              }
+            });
+          }
+        }
+        
+        // Check for vector DB upsert operations without data filtering
+        const upsertLines = lines
+          .map((line, idx) => ({ line, idx }))
+          .filter(({ line }) => 
+            /upsert|index|store/.test(line) && 
+            !/filter|sanitize|redact/.test(line.toLowerCase())
+          );
+          
+        if (upsertLines.length > 0) {
+          for (const { line, idx } of upsertLines) {
+            dataLeakageRisk.evidence.push({
+              file: filePath,
+              line: idx + 1,
+              snippet: line.trim(),
+              context: {
+                before: lines.slice(Math.max(0, idx - 2), idx),
+                after: lines.slice(idx + 1, Math.min(lines.length, idx + 3)),
+                scope: detectScope(lines, idx)
+              }
+            });
+          }
+        }
+      }
     }
     
+    // Only add risks if we found evidence
+    if (promptInjectionRisk.evidence.length > 0) {
+      risks.push(promptInjectionRisk);
+    }
+    
+    if (dataLeakageRisk.evidence.length > 0) {
+      risks.push(dataLeakageRisk);
+    }
+  }
+  
+  // Check for hardcoded API keys
+  const apiKeyRisk: SecurityRisk = {
+    risk: "Hardcoded API Keys",
+    severity: "high",
+    description: "API keys or credentials found directly in code",
+    owaspCategory: OWASP_LLM_CATEGORIES.SUPPLY_CHAIN,
+    relatedComponents: [],
+    evidence: [],
+    confidence: 0.95
+  };
+  
+  for (const file of files) {
     const lines = file.content.split('\n');
     
-    lines.forEach((line, lineIndex) => {
-      const lineNumber = lineIndex + 1;
+    // Improve API key detection regex
+    const apiKeyLines = lines
+      .map((line, idx) => ({ line, idx }))
+      .filter(({ line }) => {
+        // More comprehensive API key detection
+        const hasKeyIdentifier = /api[-_]?key|apikey|secret[-_]?key|token|auth[-_]?key/i.test(line);
+        const hasKeyPattern = /=\s*["']([a-zA-Z0-9_\-\.]{20,})["']/.test(line) || 
+                             /=\s*process\.env\.([A-Z_]+)/.test(line) ||
+                             /=\s*Deno\.env\.get\(['"]([A-Z_]+)['"]\)/.test(line);
+        return hasKeyIdentifier && hasKeyPattern && !line.includes('process.env');
+      });
       
-      // Check for imports or usage of AI components
-      for (const componentName of componentNames) {
-        const lowerLine = line.toLowerCase();
-        
-        // Python-style imports
-        if (file.extension === '.py' && 
-            (lowerLine.includes(`import ${componentName}`) || 
-             lowerLine.includes(`from ${componentName}`) ||
-             lowerLine.match(new RegExp(`${componentName}\\.\\w+`)))) {
-          
-          codeReferences.push({
-            id: `ref_${refId++}`,
-            file: file.path,
-            line: lineNumber,
-            snippet: line.trim(),
-            verified: true
-          });
-        }
-        
-        // JavaScript/TypeScript imports
-        if (['.js', '.ts', '.jsx', '.tsx'].includes(file.extension) &&
-            (lowerLine.includes(`import`) && lowerLine.includes(componentName) ||
-             lowerLine.includes(`require`) && lowerLine.includes(componentName))) {
-          
-          codeReferences.push({
-            id: `ref_${refId++}`,
-            file: file.path,
-            line: lineNumber,
-            snippet: line.trim(),
-            verified: true
-          });
-        }
-        
-        // Java imports
-        if (file.extension === '.java' &&
-            lowerLine.includes(`import`) && lowerLine.includes(componentName)) {
-          
-          codeReferences.push({
-            id: `ref_${refId++}`,
-            file: file.path,
-            line: lineNumber,
-            snippet: line.trim(),
-            verified: true
-          });
-        }
-      }
-      
-      // Look for API keys and credentials
-      if (line.match(/api[_-]?key|secret|password|credential|token/i) && 
-          line.match(/=|\:|const|let|var/) &&
-          !line.match(/process\.env|os\.environ|getenv|System\.getenv/)) {
-        
-        codeReferences.push({
-          id: `ref_${refId++}`,
+    if (apiKeyLines.length > 0) {
+      for (const { line, idx } of apiKeyLines) {
+        apiKeyRisk.evidence.push({
           file: file.path,
-          line: lineNumber,
+          line: idx + 1,
           snippet: line.trim(),
-          verified: true,
-          securityRisk: true
+          context: {
+            before: lines.slice(Math.max(0, idx - 2), idx),
+            after: lines.slice(idx + 1, Math.min(lines.length, idx + 3)),
+            scope: detectScope(lines, idx)
+          }
         });
       }
-      
-      // Look for LLM-related code (prompts, completion calls, etc.)
-      if (line.match(/prompt|completion|chat|llm|gpt|generate|token/i) && 
-          (line.match(/openai/i) || line.match(/anthropic/i) || line.match(/generate_text/i) || line.match(/llm\./i))) {
-        
-        codeReferences.push({
-          id: `ref_${refId++}`,
-          file: file.path,
-          line: lineNumber,
-          snippet: line.trim(),
-          verified: true,
-          llmUsage: true
-        });
-      }
-    });
-  });
-  
-  return codeReferences;
-}
-
-// Identify security risks based on components and patterns
-function identifySecurityRisks(files, aiComponents, codeReferences) {
-  const risks = [];
-  
-  // Check for hardcoded credentials
-  const credentialRefs = codeReferences.filter(ref => ref.securityRisk);
-  if (credentialRefs.length > 0) {
-    risks.push({
-      risk: "Hardcoded Credentials",
-      severity: "high",
-      description: "Potential API keys or credentials found in code",
-      related_code_references: credentialRefs.map(ref => ref.id)
-    });
+    }
   }
   
-  // Check for LLM usage
-  const hasLLM = aiComponents.some(comp => 
-    comp.name.toLowerCase() === 'openai' || 
-    comp.name.toLowerCase().includes('llm') ||
-    comp.name.toLowerCase().includes('gpt') ||
-    comp.name.toLowerCase() === 'langchain' ||
-    comp.name.toLowerCase() === 'anthropic' ||
-    comp.name.toLowerCase() === 'claude' ||
-    comp.type?.toLowerCase().includes('llm')
-  );
-  
-  const llmRefs = codeReferences.filter(ref => ref.llmUsage);
-  
-  // Add fundamental LLM risks if LLM is detected
-  if (hasLLM || llmRefs.length > 0) {
-    // Add prompt injection risk
-    risks.push({
-      risk: "Prompt Injection Vulnerability",
-      severity: "high",
-      description: "LLM systems may be vulnerable to prompt injection attacks where user input can manipulate the model's behavior by overriding previous instructions.",
-      related_code_references: llmRefs.map(ref => ref.id)
-    });
-    
-    // Add jailbreak risk
-    risks.push({
-      risk: "LLM Jailbreak Vulnerability",
-      severity: "medium",
-      description: "LLM implementations may be vulnerable to jailbreak techniques that bypass safety guardrails and content filters.",
-      related_code_references: llmRefs.map(ref => ref.id)
-    });
-    
-    // Add hallucination risk
-    risks.push({
-      risk: "Potential for Hallucinations",
-      severity: "medium",
-      description: "Language models can generate plausible-sounding but false or misleading information, which may be presented as factual to users.",
-      related_code_references: llmRefs.map(ref => ref.id)
-    });
-  }
-  
-  // Check for RAG components alongside LLM usage
-  const hasVectorDB = aiComponents.some(comp => 
-    ['faiss', 'pinecone', 'weaviate', 'chromadb', 'qdrant'].includes(comp.name.toLowerCase()) ||
-    comp.type?.toLowerCase().includes('vector')
-  );
-  
-  const hasEmbeddings = aiComponents.some(comp => 
-    comp.name.toLowerCase().includes('embedding') ||
-    comp.name.toLowerCase() === 'sentence-transformers'
-  );
-  
-  // If we have LLM + (Vector DB or Embeddings), flag RAG-related risks
-  if (hasLLM && (hasVectorDB || hasEmbeddings)) {
-    risks.push({
-      risk: "Potential for Data Leakage via LLM",
-      severity: "medium",
-      description: "RAG components detected alongside LLM usage, which may present data leakage risks if not properly configured",
-      related_code_references: codeReferences
-        .filter(ref => ref.snippet.toLowerCase().includes('embed') || ref.snippet.toLowerCase().includes('vector'))
-        .map(ref => ref.id)
-    });
+  if (apiKeyRisk.evidence.length > 0) {
+    risks.push(apiKeyRisk);
   }
   
   return risks;
-}
+} 
 
-// Identify metadata files like requirements.txt, package.json, etc.
-function identifyMetadataFiles(files) {
-  return files.filter(file => {
-    const fileName = file.path.split('/').pop().toLowerCase();
-    return (
-      fileName === 'requirements.txt' || 
-      fileName === 'package.json' ||
-      fileName === 'pipfile' ||
-      fileName === 'pipfile.lock' ||
-      fileName === 'setup.py'
-    );
-  });
-}
-
-// Extract AI components from metadata files
-function extractAIComponentsFromMetadata(metadataFiles) {
-  const aiLibraries = [
-    // Python
-    { name: 'openai', type: 'LLM API' },
-    { name: 'langchain', type: 'LLM Framework' },
-    { name: 'transformers', type: 'ML Framework' },
-    { name: 'huggingface', type: 'ML Hub' },
-    { name: 'sentence-transformers', type: 'Embedding' },
-    { name: 'pytorch', type: 'ML Framework' },
-    { name: 'tensorflow', type: 'ML Framework' },
-    { name: 'keras', type: 'ML Framework' },
-    { name: 'scikit-learn', type: 'ML Framework' },
-    { name: 'scipy', type: 'Scientific Computing' },
-    { name: 'numpy', type: 'Numerical Computing' },
-    { name: 'pandas', type: 'Data Analysis' },
-    { name: 'matplotlib', type: 'Data Visualization' },
-    { name: 'spacy', type: 'NLP Library' },
-    { name: 'nltk', type: 'NLP Library' },
-    { name: 'gensim', type: 'NLP Library' },
-    { name: 'anthropic', type: 'LLM API' },
-    { name: 'llama-cpp-python', type: 'Local LLM' },
-    { name: 'llama-index', type: 'RAG Framework' },
-    // Vector databases
-    { name: 'faiss', type: 'Vector Database' },
-    { name: 'faiss-cpu', type: 'Vector Database' },
-    { name: 'faiss-gpu', type: 'Vector Database' },
-    { name: 'pinecone', type: 'Vector Database' },
-    { name: 'pinecone-client', type: 'Vector Database' },
-    { name: 'weaviate', type: 'Vector Database' },
-    { name: 'weaviate-client', type: 'Vector Database' },
-    { name: 'chromadb', type: 'Vector Database' },
-    { name: 'qdrant', type: 'Vector Database' },
-    { name: 'qdrant-client', type: 'Vector Database' },
-    // JavaScript
-    { name: '@openai/api', type: 'LLM API' },
-    { name: 'openai', type: 'LLM API' }, // JS version
-    { name: 'langchainjs', type: 'LLM Framework' },
-    { name: 'langchain', type: 'LLM Framework' }, // JS version
-    { name: '@langchain/openai', type: 'LLM Framework' },
-    { name: '@huggingface/inference', type: 'ML API' },
-    { name: 'tensorflow.js', type: 'ML Framework' },
-    { name: '@tensorflow/tfjs', type: 'ML Framework' },
-    { name: 'ml5.js', type: 'ML Framework' },
-    { name: 'brain.js', type: 'ML Framework' },
-    { name: '@anthropic-ai/sdk', type: 'LLM API' },
-    { name: 'anthropic', type: 'LLM API' }, // JS version
-  ];
-
-  const foundComponents = [];
-
-  // Process each metadata file
-  metadataFiles.forEach(file => {
-    const fileName = file.path.split('/').pop().toLowerCase();
-    
-    if (fileName === 'requirements.txt' || fileName === 'pipfile' || fileName === 'setup.py') {
-      // Process Python dependencies
-      console.log(`Processing Python dependencies in ${file.path}`);
+// Add the missing buildCallGraph function
+function buildCallGraph(files: RepositoryFile[], components: AIComponent[]) {
+  // Create nodes from components and files
+  const nodes = Array.from(new Set([
+    ...components.map(c => c.name),
+    ...files.map(f => f.path.split('/').pop() || f.path)
+      .filter(name => name.match(/\.(js|ts|py|jsx|tsx)$/))
+  ]));
+  
+  // Create edges based on imports and component usage
+  const edges: Array<{from: string, to: string, type: string}> = [];
+  
+  // Add edges between components that are used together
+  for (const component of components) {
+    for (const location of component.locations) {
+      const file = location.file.split('/').pop() || location.file;
+      if (!nodes.includes(file)) continue;
       
-      const lines = file.content.split('\n');
-      lines.forEach(line => {
-        // Remove comments and trim
-        const cleanLine = line.split('#')[0].trim();
-        
-        if (cleanLine) {
-          // Extract package name (ignore version specification)
-          let packageName = cleanLine.split(/[=<>~!]/)[0].trim().toLowerCase();
-          
-          // Handle extras like package[extra]
-          packageName = packageName.split('[')[0];
-          
-          // Check for matches
-          const match = aiLibraries.find(lib => packageName === lib.name.toLowerCase());
-          
-          if (match) {
-            console.log(`Found AI library in ${file.path}: ${packageName}`);
-            foundComponents.push({
-              name: match.name,
-              type: match.type,
-              sourcePath: file.path
-            });
-          }
-        }
+      edges.push({
+        from: file,
+        to: component.name,
+        type: 'uses'
       });
-    } else if (fileName === 'package.json') {
-      // Process JavaScript dependencies
-      try {
-        const packageJson = JSON.parse(file.content);
-        
-        // Combine dependencies and devDependencies
-        const allDependencies = { 
-          ...(packageJson.dependencies || {}), 
-          ...(packageJson.devDependencies || {}) 
-        };
-        
-        for (const [packageName, version] of Object.entries(allDependencies)) {
-          const match = aiLibraries.find(lib => packageName === lib.name || packageName.includes(lib.name.toLowerCase()));
-          
-          if (match) {
-            console.log(`Found AI library in ${file.path}: ${packageName}`);
-            foundComponents.push({
-              name: match.name,
-              type: match.type,
-              sourcePath: file.path
-            });
-          }
-        }
-      } catch (error) {
-        console.error(`Error parsing package.json at ${file.path}:`, error);
-      }
-    }
-  });
-
-  // Remove duplicates
-  const uniqueComponents = [];
-  const seenComponents = new Set();
-  
-  foundComponents.forEach(component => {
-    const key = component.name.toLowerCase();
-    if (!seenComponents.has(key)) {
-      seenComponents.add(key);
-      uniqueComponents.push(component);
-    }
-  });
-
-  console.log(`Extracted ${uniqueComponents.length} unique AI components from metadata files`);
-  return uniqueComponents;
-}
-
-// Prioritize files for analysis
-function prioritizeFilesForAnalysis(files, aiComponentsFromMetadata) {
-  // First, copy the files to avoid modifying the original array
-  const allFiles = [...files];
-  
-  // Sort files by importance
-  const sortedFiles = allFiles.sort((a, b) => {
-    // First prioritize metadata files
-    const aIsMetadata = isMetadataFile(a.path);
-    const bIsMetadata = isMetadataFile(b.path);
-    
-    if (aIsMetadata && !bIsMetadata) return -1;
-    if (!aIsMetadata && bIsMetadata) return 1;
-    
-    // Then prioritize files that might contain AI components
-    const aHasAIImport = mightContainAIImports(a);
-    const bHasAIImport = mightContainAIImports(b);
-    
-    if (aHasAIImport && !bHasAIImport) return -1;
-    if (!aHasAIImport && bHasAIImport) return 1;
-    
-    // Then prioritize by file size (smaller files first to maximize diversity)
-    return a.content.length - b.content.length;
-  });
-  
-  // Extract information about AI components from metadata
-  const aiLibraryNames = aiComponentsFromMetadata.map(comp => comp.name.toLowerCase());
-  
-  // Re-prioritize code files that might import the detected AI libraries
-  const reprioritizedFiles = sortedFiles.map(file => {
-    // Check if this file imports any of the detected AI libraries
-    const importsPriority = checkForSpecificImports(file, aiLibraryNames);
-    return { file, importsPriority };
-  });
-  
-  // Sort by the importsPriority (higher first)
-  reprioritizedFiles.sort((a, b) => b.importsPriority - a.importsPriority);
-  
-  // Get the final list of files, ensuring metadata files are first
-  const metadataFiles = reprioritizedFiles
-    .filter(item => isMetadataFile(item.file.path))
-    .map(item => item.file);
-  
-  const nonMetadataFiles = reprioritizedFiles
-    .filter(item => !isMetadataFile(item.file.path))
-    .map(item => item.file);
-  
-  // Combine and limit to a reasonable size for analysis
-  const combinedFiles = [...metadataFiles, ...nonMetadataFiles];
-  
-  // Limit total content size to avoid OpenAI token limits
-  const maxTokens = 50000; // Approximate token limit
-  const estimatedTokensPerChar = 0.25; // Rough estimate
-  
-  let totalSize = 0;
-  const finalFiles = [];
-  
-  for (const file of combinedFiles) {
-    const estimatedTokens = file.content.length * estimatedTokensPerChar;
-    
-    if (totalSize + estimatedTokens <= maxTokens) {
-      finalFiles.push(file);
-      totalSize += estimatedTokens;
-    } else {
-      // If we can't fit the entire file, include a truncated version or just the path
-      const truncatedContent = file.content.substring(0, Math.floor((maxTokens - totalSize) / estimatedTokensPerChar));
-      if (truncatedContent.length > 100) {
-        finalFiles.push({
-          path: file.path,
-          content: truncatedContent + '... [content truncated for size]',
-          extension: file.extension
-        });
-      } else {
-        // Just include the path if we can't fit a meaningful portion
-        finalFiles.push({
-          path: file.path,
-          content: '[content omitted for size]',
-          extension: file.extension
-        });
-      }
-      break;
     }
   }
-  
-  console.log(`Prioritized ${finalFiles.length} files for analysis out of ${files.length} total files`);
-  return finalFiles;
-}
-
-// Helper function to check if file is a metadata file
-function isMetadataFile(path) {
-  const fileName = path.split('/').pop().toLowerCase();
-  return (
-    fileName === 'requirements.txt' || 
-    fileName === 'package.json' ||
-    fileName === 'pipfile' ||
-    fileName === 'pipfile.lock' ||
-    fileName === 'setup.py'
-  );
-}
-
-// Helper function to check if a file might contain AI component imports
-function mightContainAIImports(file) {
-  const content = file.content.toLowerCase();
-  
-  // Check for common AI imports
-  const aiKeywords = [
-    'import openai', 'from openai', 
-    'import langchain', 'from langchain',
-    'import transformers', 'from transformers',
-    'import huggingface', 'from huggingface',
-    'import tensorflow', 'from tensorflow',
-    'import torch', 'from torch',
-    'import keras', 'from keras',
-    'import sklearn', 'from sklearn',
-    'import numpy', 'from numpy',
-    'import pandas', 'from pandas',
-    'import anthropic', 'from anthropic',
-    'llm', 'gpt', 'bert', 'transformer',
-    'embedding', 'vector', 'faiss', 'pinecone', 'weaviate', 'chromadb', 'qdrant'
-  ];
-  
-  return aiKeywords.some(keyword => content.includes(keyword));
-}
-
-// Check for specific import patterns and assign a priority score
-function checkForSpecificImports(file, aiLibraryNames) {
-  if (!file.content) return 0;
-  
-  const content = file.content.toLowerCase();
-  let importScore = 0;
-  
-  // For Python files
-  if (file.extension === '.py') {
-    // Check for specific imports of AI libraries
-    for (const libName of aiLibraryNames) {
-      const patterns = [
-        `import ${libName}`,
-        `from ${libName}`,
-        `import ${libName}.`,
-        `from ${libName}.`
-      ];
-      
-      for (const pattern of patterns) {
-        if (content.includes(pattern)) {
-          importScore += 10;
-          console.log(`Found import of ${libName} in ${file.path}`);
-        }
-      }
-    }
-  }
-  
-  // For JavaScript/TypeScript files
-  if (['.js', '.ts', '.jsx', '.tsx'].includes(file.extension)) {
-    // Check for import statements
-    for (const libName of aiLibraryNames) {
-      const patterns = [
-        `import ${libName}`,
-        `from '${libName}`,
-        `from "${libName}`,
-        `require('${libName}`,
-        `require("${libName}`
-      ];
-      
-      for (const pattern of patterns) {
-        if (content.includes(pattern)) {
-          importScore += 10;
-          console.log(`Found import of ${libName} in ${file.path}`);
-        }
-      }
-    }
-  }
-  
-  return importScore;
-}
-
-// Format the repository data for OpenAI analysis
-function formatRepositoryForAnalysis(repositoryName, files, preExtractedComponents) {
-  let prompt = `Please analyze the GitHub repository "${repositoryName}" for AI components and security risks. The repository has ${files.length} files. I'll provide the content of key files below.\n\n`;
-  
-  // Add information about pre-extracted components
-  if (preExtractedComponents.length > 0) {
-    prompt += `Pre-extracted AI components from dependency files:\n`;
-    preExtractedComponents.forEach(comp => {
-      prompt += `- ${comp.name} (${comp.type}) found in ${comp.sourcePath}\n`;
-    });
-    prompt += `\n`;
-  }
-  
-  // Add file contents
-  files.forEach(file => {
-    prompt += `=== FILE: ${file.path} ===\n${file.content}\n\n`;
-  });
-  
-  prompt += `Based on the repository content above, please provide a JSON response with the following structure:
-{
-  "ai_components_detected": [
-    { "name": "component_name", "type": "component_type", "confidence": 0.95 }
-  ],
-  "security_risks": [
-    { 
-      "risk": "risk_name", 
-      "severity": "high/medium/low", 
-      "description": "Description of the risk",
-      "related_code_references": ["ref_id1", "ref_id2"],
-      "owasp_category": {
-        "id": "LLMxx:2025",  // Use ONLY OWASP LLM Top 10 2025 categories
-        "name": "Category Name",
-        "description": "Category description"
-      }
-    }
-  ],
-  "code_references": [
-    { 
-      "id": "unique_id", 
-      "file": "file_path", 
-      "line": 42, 
-      "snippet": "code_snippet", 
-      "verified": true
-    }
-  ],
-  "confidence_score": 0.85,
-  "remediation_suggestions": [
-    "Suggestion 1",
-    "Suggestion 2"
-  ]
-}
-
-Please be specific about AI components you identify, focusing on:
-1. LLM APIs (OpenAI, Claude, etc.)
-2. AI frameworks (LangChain, HuggingFace, etc.)
-3. Vector databases (FAISS, Pinecone, etc.)
-4. Embedding generation
-5. RAG components
-
-IMPORTANT: Always include these fundamental security risks when LLM components are detected:
-1. Prompt Injection Vulnerability - user input potentially manipulating LLM behavior
-2. LLM Jailbreak Vulnerability - potential for bypassing safety guardrails
-3. Potential for Hallucinations - risk of presenting false information as factual
-
-For code_references, include only actual code you can verify from the provided files.
-
-IMPORTANT: For ALL security risks, use ONLY these OWASP LLM categories:
-- LLM01:2025 Prompt Injection
-- LLM02:2025 Sensitive Information Disclosure
-- LLM03:2025 Supply Chain
-- LLM04:2025 Data and Model Poisoning
-- LLM05:2025 Improper Output Handling
-- LLM06:2025 Excessive Agency
-- LLM07:2025 System Prompt Leakage
-- LLM08:2025 Vector and Embedding Weaknesses
-- LLM09:2025 Misinformation
-- LLM10:2025 Unbounded Consumption
-
-Do not use any other OWASP categories.`;
-
-  return prompt;
-}
-
-// Function to fetch repository content from GitHub
-async function fetchRepositoryContent(repositoryUrl) {
-  try {
-    // Extract owner and repo from the URL
-    const urlMatch = repositoryUrl.match(/github\.com\/([^\/]+)\/([^\/]+)/);
-    
-    if (!urlMatch) {
-      return { error: "Invalid GitHub repository URL format" };
-    }
-    
-    const [, owner, repo] = urlMatch;
-    const branch = 'main'; // Default to main branch
-
-    console.log(`Fetching repository content for ${owner}/${repo}`);
-    
-    // First, get the repository tree recursively
-    const treeUrl = `https://api.github.com/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`;
-    console.log(`Fetching tree from: ${treeUrl}`);
-    
-    const treeResponse = await fetch(treeUrl);
-    
-    if (!treeResponse.ok) {
-      console.error(`GitHub API error: ${treeResponse.status}`);
-      if (treeResponse.status === 404) {
-        // Try with 'master' branch if 'main' not found
-        const masterTreeUrl = `https://api.github.com/repos/${owner}/${repo}/git/trees/master?recursive=1`;
-        console.log(`Trying master branch: ${masterTreeUrl}`);
-        
-        const masterTreeResponse = await fetch(masterTreeUrl);
-        
-        if (!masterTreeResponse.ok) {
-          return { error: `Could not find repository tree on main or master branch: ${masterTreeResponse.status}` };
-        }
-        
-        const masterTree = await masterTreeResponse.json();
-        return await processRepositoryTree(owner, repo, 'master', masterTree);
-      }
-      
-      return { error: `GitHub API error: ${treeResponse.status}` };
-    }
-    
-    const tree = await treeResponse.json();
-    return await processRepositoryTree(owner, repo, branch, tree);
-    
-  } catch (error) {
-    console.error('Error fetching repository content:', error);
-    return { error: `Error fetching repository content: ${error.message}` };
-  }
-}
-
-// Process the repository tree and fetch important files
-async function processRepositoryTree(owner, repo, branch, tree) {
-  if (!tree.tree) {
-    return { error: "Invalid repository tree structure" };
-  }
-
-  // Filter for actual files (not directories)
-  const fileNodes = tree.tree.filter(node => node.type === 'blob');
-  
-  console.log(`Found ${fileNodes.length} files in repository`);
-  
-  // Focus on key file types
-  const importantExtensions = [
-    '.py', '.js', '.ts', '.jsx', '.tsx', 
-    '.java', '.rb', '.go', '.rs', '.php',
-    '.md', '.ipynb'
-  ];
-  
-  // Always include these files regardless of extension
-  const importantFileNames = [
-    'requirements.txt', 'package.json', 'Pipfile', 'Pipfile.lock', 
-    'Gemfile', 'Gemfile.lock', 'go.mod', 'Cargo.toml', 'composer.json'
-  ];
-  
-  // Filter for important files to analyze
-  const importantFiles = fileNodes.filter(node => {
-    const fileName = node.path.split('/').pop();
-    
-    // Always include important metadata files
-    if (importantFileNames.some(name => fileName.toLowerCase() === name.toLowerCase())) {
-      return true;
-    }
-    
-    // Include files with important extensions
-    const extension = '.' + fileName.split('.').pop();
-    return importantExtensions.includes(extension);
-  });
-  
-  console.log(`Identified ${importantFiles.length} important files for analysis`);
-  
-  // Sort by file path to help with context during analysis
-  importantFiles.sort((a, b) => a.path.localeCompare(b.path));
-  
-  // For each file, fetch the content
-  const files = [];
-  
-  const maxFilesToFetch = Math.min(importantFiles.length, 100); // Limit to prevent abuse
-  const filePromises = [];
-  
-  for (let i = 0; i < maxFilesToFetch; i++) {
-    const file = importantFiles[i];
-    filePromises.push(fetchFileContent(owner, repo, branch, file.path));
-  }
-  
-  const fetchedFiles = await Promise.all(filePromises);
-  files.push(...fetchedFiles.filter(Boolean)); // Filter out any null results
   
   return {
-    repositoryName: `${owner}/${repo}`,
-    files: files
+    nodes,
+    edges
   };
-}
-
-// Fetch a single file's content
-async function fetchFileContent(owner, repo, branch, path) {
-  try {
-    // Use the raw GitHub URL to get the file content
-    const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${path}`;
-    console.log(`Fetching file: ${rawUrl}`);
-    
-    const response = await fetch(rawUrl);
-    
-    if (!response.ok) {
-      console.error(`Error fetching file ${path}: ${response.status}`);
-      return null;
-    }
-    
-    const content = await response.text();
-    
-    return {
-      path: path,
-      content: content,
-      extension: '.' + path.split('.').pop()
-    };
-  } catch (error) {
-    console.error(`Error fetching file ${path}:`, error);
-    return null;
-  }
-}
-
-// Check for potential hardcoded system prompts
-function isLikelySystemPrompt(line: string, fileContext: { path: string, content: string }): boolean {
-  const lowerLine = line.toLowerCase();
-  
-  // Skip if line is a comment
-  if (lowerLine.trim().startsWith('//') || lowerLine.trim().startsWith('/*') || lowerLine.trim().startsWith('*')) {
-    return false;
-  }
-
-  // Skip if referencing environment variables or configs
-  if (lowerLine.includes('process.env') || 
-      lowerLine.includes('os.environ') || 
-      lowerLine.includes('config.') ||
-      lowerLine.includes('getenv')) {
-    return false;
-  }
-
-  // Look for actual prompt assignment patterns
-  const promptPatterns = [
-    // OpenAI style system messages
-    /(?:const|let|var)\s+\w+\s*=\s*[{[]\s*{\s*role\s*:\s*['"]system['"]\s*,\s*content\s*:/i,
-    
-    // Direct system prompt assignments
-    /(?:const|let|var)\s+\w+\s*=\s*['"`]<\|system\|>/i,
-    
-    // Anthropic style system prompts
-    /(?:const|let|var)\s+\w+\s*=\s*['"`]Human:/i,
-    
-    // Common template literal patterns
-    /systemPrompt\s*=\s*`[^`]{10,}`/,
-    
-    // JSON-style prompt templates
-    /"system_prompt":\s*"[^"]{10,}"/
-  ];
-
-  // Check if line matches any prompt pattern
-  const hasPromptPattern = promptPatterns.some(pattern => pattern.test(line));
-  
-  if (!hasPromptPattern) {
-    return false;
-  }
-
-  // Additional validation - check if line contains actual content
-  const hasSubstantialContent = line.length > 50; // Arbitrary minimum length
-  
-  // Check if in test file
-  const isTestFile = fileContext.path.toLowerCase().includes('test') || 
-                     fileContext.path.toLowerCase().includes('spec');
-
-  return hasSubstantialContent && !isTestFile;
-}
+} 
