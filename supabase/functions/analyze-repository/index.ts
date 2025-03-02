@@ -403,48 +403,95 @@ async function analyzeRepository(content: RepositoryContent): Promise<AnalysisRe
     console.log('Analyzing security risks...');
     const securityRisks: SecurityRisk[] = [];
     
-    // Add this to the beginning of the analyze function
+    // Initialize the risk registry at the beginning of the analyze function
     const riskRegistry = {
       "Hardcoded API Keys": {
         risk: "Hardcoded API Keys",
-        severity: "high",
+        severity: "high" as Severity,
         description: "API keys or credentials found directly in code",
         owaspCategory: OWASP_LLM_CATEGORIES.INSECURE_OUTPUT_HANDLING,
         relatedComponents: [],
-        evidence: [],
+        evidence: [] as CodeLocation[],
         confidence: 0.95
       },
-      // Define other risks here
+      "System Prompt Exposure": {
+        risk: "System Prompt Exposure",
+        severity: "medium" as Severity,
+        description: "System prompts found in code which could expose application logic",
+        owaspCategory: OWASP_LLM_CATEGORIES.SYSTEM_PROMPT_LEAKAGE,
+        relatedComponents: [],
+        evidence: [] as CodeLocation[],
+        confidence: 0.9
+      },
+      "Potential RAG Prompt Injection": {
+        risk: "Potential RAG Prompt Injection",
+        severity: "medium" as Severity,
+        description: "RAG implementation detected without clear input sanitization",
+        owaspCategory: OWASP_LLM_CATEGORIES.PROMPT_INJECTION,
+        relatedComponents: [],
+        evidence: [] as CodeLocation[],
+        confidence: 0.8
+      }
     };
 
-    // Then in the detection function
-    function detectSecurityRisks(file: RepositoryFile, aiComponents: AIComponent[]): void {
-      // API key detection
-      const apiKeyPattern = /api[-_]?key|apikey|secret[-_]?key|token/i;
-      if (apiKeyPattern.test(file.content)) {
-        // Add evidence to existing risk instead of creating a new one
-        const lines = file.content.split('\n');
-        lines.forEach((line, index) => {
-          if (apiKeyPattern.test(line)) {
-            riskRegistry["Hardcoded API Keys"].evidence.push({
-              file: file.path,
-              line: index + 1,
-              snippet: line.trim(),
-              context: {
-                before: lines.slice(Math.max(0, index - 2), index),
-                after: lines.slice(index + 1, Math.min(lines.length, index + 3)),
-                scope: "Global" // Or determine scope
-              }
-            });
+    // Check for security risks in each file
+    for (const file of content.files) {
+      const lines = file.content.split('\n');
+      
+      // Check for API keys
+      const apiKeyPattern = /(api_key|apikey|api-key|OPENAI_API_KEY|PINECONEAPI|OPENAIKEY)[\s]*=[\s]*["']?[A-Za-z0-9\-_]+["']?/i;
+      lines.forEach((line, index) => {
+        if (apiKeyPattern.test(line)) {
+          riskRegistry["Hardcoded API Keys"].evidence.push({
+            file: file.path,
+            line: index + 1,
+            snippet: line.trim(),
+            context: {
+              before: lines.slice(Math.max(0, index - 2), index),
+              after: lines.slice(index + 1, Math.min(lines.length, index + 3)),
+              scope: 'Global'
+            }
+          });
+        }
+      });
+      
+      // Check for system prompts
+      const systemPromptPattern = /(system_prompt|system prompt|systemPrompt|SystemMessage)[\s]*=[\s]*["'`]|content=["'`]/i;
+      lines.forEach((line, index) => {
+        if (systemPromptPattern.test(line)) {
+          riskRegistry["System Prompt Exposure"].evidence.push({
+            file: file.path,
+            line: index + 1,
+            snippet: line.trim(),
+            context: {
+              before: lines.slice(Math.max(0, index - 2), index),
+              after: lines.slice(index + 1, Math.min(lines.length, index + 3)),
+              scope: 'Global'
+            }
+          });
+        }
+      });
+      
+      // Check for RAG implementations
+      if (file.content.includes('pinecone') || file.content.includes('vectordb') || 
+          file.content.includes('chroma') || file.content.includes('rag_data')) {
+        // Only add one evidence per file for RAG
+        riskRegistry["Potential RAG Prompt Injection"].evidence.push({
+          file: file.path,
+          line: 1,
+          snippet: "RAG implementation detected",
+          context: {
+            before: [],
+            after: [],
+            scope: 'Global'
           }
         });
       }
-      
-      // Other risk detections...
     }
 
-    // At the end, convert the registry to an array
-    const securityRisks = Object.values(riskRegistry).filter(risk => risk.evidence.length > 0);
+    // Convert registry to array, filtering out risks with no evidence
+    const securityRisks = Object.values(riskRegistry)
+      .filter(risk => risk.evidence.length > 0);
 
     console.log('Analysis complete. Found:');
     console.log(`- ${aiComponents.length} AI components`);
