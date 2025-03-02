@@ -1,21 +1,74 @@
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { InfoIcon, AlertTriangleIcon } from "lucide-react";
-import { RepositoryReport } from "@/types/reportTypes";
 import ConfidenceScoreCard from "./reportSections/ConfidenceScoreCard";
 import SecurityRisksCard from "./reportSections/SecurityRisksCard";
-import AIComponentsCard from "./reportSections/AIComponentsCard";
-import AdditionalCodeReferencesCard from "./reportSections/AdditionalCodeReferencesCard";
-import RemediationSuggestionsCard from "./reportSections/RemediationSuggestionsCard";
+
+// Update types to match new format
+type RepositoryReport = {
+  repositoryName: string;
+  timestamp: string;
+  aiComponents: Array<{
+    name: string;
+    type: string;
+    confidence: number;
+    detectionMethod: 'import' | 'usage' | 'package' | 'configuration';
+    locations: Array<{
+      file: string;
+      line: number;
+      snippet: string;
+      context: {
+        before: string[];
+        after: string[];
+        scope?: string;
+      }
+    }>;
+  }>;
+  securityRisks: Array<{
+    risk: string;
+    severity: 'high' | 'medium' | 'low';
+    description: string;
+    owaspCategory: {
+      id: string;
+      name: string;
+      description: string;
+    };
+    relatedComponents: string[];
+    evidence: Array<{
+      file: string;
+      line: number;
+      snippet: string;
+      context: {
+        before: string[];
+        after: string[];
+        scope?: string;
+      }
+    }>;
+    confidence: number;
+  }>;
+  callGraph: {
+    nodes: string[];
+    edges: Array<{
+      from: string;
+      to: string;
+      type: string;
+    }>;
+  };
+  summary: {
+    totalAIUsage: number;
+    risksByLevel: {
+      high: number;
+      medium: number;
+      low: number;
+    };
+    topRisks: string[];
+  };
+};
 
 interface ReportResultsProps {
-  report: RepositoryReport;
+  report: RepositoryReport | null;
 }
 
-const ReportResults = ({ report }: ReportResultsProps) => {
-  // Add extensive debug logging to see what's in the report
-  console.log("Complete report data:", JSON.stringify(report, null, 2));
-  
-  // Check if report is valid
+export default function ReportResults({ report }: ReportResultsProps) {
   if (!report) {
     return (
       <Alert variant="destructive">
@@ -27,146 +80,44 @@ const ReportResults = ({ report }: ReportResultsProps) => {
       </Alert>
     );
   }
-  
-  // Check if required properties exist
-  if (!report.code_references || !report.security_risks || !report.ai_components_detected) {
-    console.error("Missing required report properties:", report);
-    return (
-      <Alert variant="destructive">
-        <AlertTriangleIcon className="h-4 w-4" />
-        <AlertTitle>Invalid Report Format</AlertTitle>
-        <AlertDescription>
-          <p>The report is missing required properties. Debug information:</p>
-          <pre className="mt-2 p-2 bg-gray-100 rounded text-xs overflow-auto">
-            {JSON.stringify({
-              has_code_references: !!report.code_references,
-              has_security_risks: !!report.security_risks,
-              has_ai_components: !!report.ai_components_detected,
-              confidence_score: report.confidence_score,
-              remediation_count: report.remediation_suggestions?.length || 0
-            }, null, 2)}
-          </pre>
-        </AlertDescription>
-      </Alert>
-    );
-  }
-  
-  // Extra validation steps for required arrays
-  if (!Array.isArray(report.code_references) || !Array.isArray(report.security_risks) || !Array.isArray(report.ai_components_detected)) {
-    console.error("Report arrays are not valid arrays:", report);
-    return (
-      <Alert variant="destructive">
-        <AlertTriangleIcon className="h-4 w-4" />
-        <AlertTitle>Invalid Report Data</AlertTitle>
-        <AlertDescription>
-          <p>The report contains invalid data structures. Expected arrays but received:</p>
-          <pre className="mt-2 p-2 bg-gray-100 rounded text-xs overflow-auto">
-            {JSON.stringify({
-              code_references_type: typeof report.code_references,
-              security_risks_type: typeof report.security_risks,
-              ai_components_type: typeof report.ai_components_detected
-            }, null, 2)}
-          </pre>
-        </AlertDescription>
-      </Alert>
-    );
-  }
-  
-  // Add detailed logging about the security risks to help debug
-  console.log("Security risks:", JSON.stringify(report.security_risks, null, 2));
-  
-  // Filter out unverified code references
-  const verifiedCodeReferences = report.code_references.filter(ref => ref && ref.verified === true);
-  console.log("Verified code references:", verifiedCodeReferences.length);
-  
-  try {
-    // Use the pre-processed data directly
-    const unrelatedCodeReferences = report.code_references.filter(ref => 
-      !report.security_risks.some(risk => 
-        risk.related_code_references?.includes(ref.id)
-      )
-    );
 
-    // Process remediation suggestions with more detailed handling
-    let validRemediationSuggestions: string[] = [];
+  return (
+    <div className="space-y-6">
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+        {/* Summary Statistics */}
+        <div className="rounded-xl border bg-card text-card-foreground shadow">
+          <div className="p-6">
+            <div className="flex items-center space-x-2">
+              <InfoIcon className="h-4 w-4 text-muted-foreground" />
+              <h3 className="tracking-tight">Total AI Components</h3>
+            </div>
+            <div className="mt-2">
+              <p className="text-2xl font-bold">{report.summary.totalAIUsage}</p>
+            </div>
+          </div>
+        </div>
 
-    if (Array.isArray(report.remediation_suggestions)) {
-      console.log("Raw remediation suggestions:", JSON.stringify(report.remediation_suggestions, null, 2));
-      
-      // Process each suggestion carefully
-      validRemediationSuggestions = report.remediation_suggestions
-        .filter(suggestion => suggestion !== null && suggestion !== undefined)
-        .map(suggestion => {
-          if (typeof suggestion === 'string') {
-            return suggestion;
-          } else if (suggestion && typeof suggestion === 'object') {
-            // Handle different object formats
-            if ('suggestion' in suggestion && typeof suggestion.suggestion === 'string') {
-              return suggestion.suggestion;
-            } else {
-              // Try to extract a string from the object
-              const stringValue = Object.values(suggestion).find(val => typeof val === 'string');
-              return stringValue || JSON.stringify(suggestion);
-            }
-          }
-          return '';
-        })
-        .filter(suggestionText => suggestionText !== '');
-    }
-    
-    console.log("Valid remediation suggestions:", validRemediationSuggestions);
-
-    return (
-      <div className="space-y-6 animate-in fade-in duration-500">
-        <Alert className="bg-yellow-50 border-yellow-200">
-          <InfoIcon className="h-4 w-4 text-yellow-600" />
-          <AlertDescription className="text-yellow-800">
-            This analysis is powered by AI and only displays confirmed findings. The report may not catch all AI components or security risks.
-          </AlertDescription>
-        </Alert>
-        
-        {/* Overall Score Card */}
-        <ConfidenceScoreCard confidenceScore={report.confidence_score} />
-
-        {/* Security Risks Section */}
-        <SecurityRisksCard 
-          securityRisks={report.security_risks}
-          verifiedCodeReferences={verifiedCodeReferences}
-          aiComponents={report.ai_components_detected}
-        />
-
-        {/* AI Components Section */}
-        <AIComponentsCard components={report.ai_components_detected} />
-
-        {/* Additional Code References Section */}
-        <AdditionalCodeReferencesCard references={unrelatedCodeReferences} />
-
-        {/* Remediation Suggestions - Only show if valid suggestions exist */}
-        {validRemediationSuggestions.length > 0 && (
-          <RemediationSuggestionsCard suggestions={validRemediationSuggestions} />
-        )}
+        {/* Risk Levels */}
+        <div className="rounded-xl border bg-card text-card-foreground shadow">
+          <div className="p-6">
+            <div className="flex items-center space-x-2">
+              <AlertTriangleIcon className="h-4 w-4 text-muted-foreground" />
+              <h3 className="tracking-tight">Security Risks</h3>
+            </div>
+            <div className="mt-2 space-y-1">
+              <p className="text-sm text-red-600">High: {report.summary.risksByLevel.high}</p>
+              <p className="text-sm text-yellow-600">Medium: {report.summary.risksByLevel.medium}</p>
+              <p className="text-sm text-green-600">Low: {report.summary.risksByLevel.low}</p>
+            </div>
+          </div>
+        </div>
       </div>
-    );
-  } catch (error) {
-    console.error("Error processing report data:", error);
-    return (
-      <Alert variant="destructive">
-        <AlertTriangleIcon className="h-4 w-4" />
-        <AlertTitle>Processing Error</AlertTitle>
-        <AlertDescription>
-          <p>An error occurred while processing the report: {String(error)}</p>
-          <pre className="mt-2 p-2 bg-gray-100 rounded text-xs overflow-auto">
-            Report data: {JSON.stringify({
-              code_references_count: report.code_references?.length || 0,
-              security_risks_count: report.security_risks?.length || 0,
-              ai_components_count: report.ai_components_detected?.length || 0,
-              confidence_score: report.confidence_score
-            }, null, 2)}
-          </pre>
-        </AlertDescription>
-      </Alert>
-    );
-  }
-};
 
-export default ReportResults;
+      {/* Main Content */}
+      <div className="grid gap-4 md:grid-cols-2">
+        <SecurityRisksCard risks={report.securityRisks} />
+        <ConfidenceScoreCard components={report.aiComponents} />
+      </div>
+    </div>
+  );
+}

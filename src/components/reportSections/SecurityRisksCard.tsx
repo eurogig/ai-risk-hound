@@ -19,24 +19,38 @@ import { getRelatedCodeReferences, getRelatedAIComponents } from "@/utils/riskAn
 import CodeReferencesList from "./CodeReferencesList";
 
 interface SecurityRisksCardProps {
-  securityRisks: SecurityRisk[];
+  risks: Array<{
+    risk: string;
+    severity: 'high' | 'medium' | 'low';
+    description: string;
+    owaspCategory: {
+      id: string;
+      name: string;
+      description: string;
+    };
+    evidence: Array<{
+      file: string;
+      line: number;
+      snippet: string;
+    }>;
+  }>;
   verifiedCodeReferences: CodeReference[];
   aiComponents: AIComponent[];
 }
 
 const SecurityRisksCard = ({ 
-  securityRisks, 
+  risks, 
   verifiedCodeReferences,
   aiComponents
 }: SecurityRisksCardProps) => {
   // Add debug logging to see what security risks we're receiving
-  console.log("Security risks in SecurityRisksCard:", JSON.stringify(securityRisks, null, 2));
+  console.log("Security risks in SecurityRisksCard:", JSON.stringify(risks, null, 2));
   
   // Filter to ensure we only process valid security risks
   // Also deduplicate risks by name to prevent duplicates
   const processedRisks = new Map<string, SecurityRisk>();
   
-  securityRisks.forEach(risk => {
+  risks.forEach(risk => {
     if (!risk || typeof risk !== 'object') {
       console.log("Invalid risk object:", risk);
       return;
