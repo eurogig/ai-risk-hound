@@ -353,6 +353,7 @@ async function analyzeRepository(content: RepositoryContent): Promise<AnalysisRe
         // Check for imports
         for (const [library, pattern] of Object.entries(AI_PATTERNS.imports)) {
           if (pattern.test(line)) {
+            console.log(`Found AI library: ${library} in file: ${file.path}`);
             // Add to graph
             if (!callGraph.nodes.includes(file.path)) {
               callGraph.nodes.push(file.path);
@@ -526,6 +527,11 @@ async function fetchRepositoryContent(url: string): Promise<RepositoryContent> {
       `https://api.github.com/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`
     );
 
+    console.log('GitHub API Response:', {
+      status: response.status,
+      headers: Object.fromEntries(response.headers.entries()),
+    });
+
     if (!response.ok) {
       if (response.status === 403) {
         throw new Error('GitHub API rate limit exceeded. Please try again later.');
@@ -535,9 +541,9 @@ async function fetchRepositoryContent(url: string): Promise<RepositoryContent> {
 
     const data = await response.json();
     
-    // Filter for relevant files
-    const relevantFiles = data.tree.filter(item => 
-      item.type === 'blob' && (
+    // Add logging for file filtering
+    const relevantFiles = data.tree.filter(item => {
+      const isRelevant = item.type === 'blob' && (
         item.path.endsWith('.py') ||
         item.path.endsWith('.js') ||
         item.path.endsWith('.ts') ||
@@ -545,8 +551,10 @@ async function fetchRepositoryContent(url: string): Promise<RepositoryContent> {
         item.path.endsWith('.jsx') ||
         item.path.endsWith('requirements.txt') ||
         item.path.endsWith('package.json')
-      )
-    );
+      );
+      console.log(`File ${item.path}: ${isRelevant ? 'relevant' : 'skipped'}`);
+      return isRelevant;
+    });
 
     // Fetch raw content directly (no auth needed)
     const files = await Promise.all(
