@@ -1,6 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.4.0"
-import * as graphlib from "https://deno.land/x/graphlib@2.1.8/mod.ts"
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -312,14 +311,170 @@ function isValidRepositoryContent(content: any): content is RepositoryContent {
          );
 }
 
+// Our graph is simple enough to manage without a library
+type CallGraph = {
+  nodes: string[];
+  edges: Array<{
+    from: string;
+    to: string;
+    type: string;
+  }>;
+};
+
 // Main analysis function (to be implemented next)
 async function analyzeRepository(content: RepositoryContent): Promise<AnalysisResult> {
   // Step 1: Analyze package files first
   try {
     const packageComponents = analyzePackageFiles(content.files);
+    
+    // Use these findings to inform our code analysis
+    const detectedLibraries = new Set(packageComponents.map(c => c.name));
+    
+    // Initialize graph for tracking relationships
+    const callGraph: CallGraph = {
+      nodes: [],
+      edges: []
+    };
+
+    // Step 2: Scan for AI components and build initial graph
+    const aiComponents: AIComponent[] = [];
+    const detectedImports = new Map<string, Set<string>>(); // file -> imports
+
+    for (const file of content.files) {
+      // Skip non-code files
+      if (!['.py', '.js', '.ts', '.jsx', '.tsx'].includes(file.extension)) {
+        continue;
+      }
+
+      const lines = file.content.split('\n');
+      
+      // Track imports and build graph
+      lines.forEach((line, lineIndex) => {
+        // Check for imports
+        for (const [library, pattern] of Object.entries(AI_PATTERNS.imports)) {
+          if (pattern.test(line)) {
+            // Add to graph
+            if (!callGraph.nodes.includes(file.path)) {
+              callGraph.nodes.push(file.path);
+            }
+            
+            // Record the import
+            if (!detectedImports.has(file.path)) {
+              detectedImports.set(file.path, new Set());
+            }
+            detectedImports.get(file.path)?.add(library);
+
+            // Add component with high confidence due to direct import
+            aiComponents.push({
+              name: library,
+              type: 'Library',
+              confidence: 0.9,
+              detectionMethod: 'import',
+              locations: [{
+                file: file.path,
+                line: lineIndex + 1,
+                snippet: line.trim(),
+                context: {
+                  before: lines.slice(Math.max(0, lineIndex - 2), lineIndex),
+                  after: lines.slice(lineIndex + 1, lineIndex + 3),
+                  scope: detectScope(lines, lineIndex)
+                }
+              }]
+            });
+          }
+        }
+      });
+    }
+
+    // Step 3: Detect actual usage and update confidence
+    const securityRisks: SecurityRisk[] = [];
+    
+    for (const file of content.files) {
+      if (!detectedImports.has(file.path)) continue;
+
+      const imports = detectedImports.get(file.path)!;
+      const lines = file.content.split('\n');
+
+      lines.forEach((line, lineIndex) => {
+        // Check for model usage
+        for (const [modelType, pattern] of Object.entries(AI_PATTERNS.models)) {
+          if (pattern.test(line)) {
+            // Add to risks if we find direct model usage
+            securityRisks.push({
+              risk: "Direct Model Usage",
+              severity: "high",
+              description: `Direct usage of ${modelType} model detected`,
+              owaspCategory: OWASP_LLM_CATEGORIES.PROMPT_INJECTION,
+              relatedComponents: Array.from(imports),
+              evidence: [{
+                file: file.path,
+                line: lineIndex + 1,
+                snippet: line.trim(),
+                context: {
+                  before: lines.slice(Math.max(0, lineIndex - 2), lineIndex),
+                  after: lines.slice(lineIndex + 1, lineIndex + 3),
+                  scope: detectScope(lines, lineIndex)
+                }
+              }],
+              confidence: 0.95
+            });
+          }
+        }
+
+        // Check for system prompts
+        for (const [promptType, pattern] of Object.entries(AI_PATTERNS.systemPrompts)) {
+          if (pattern.test(line)) {
+            securityRisks.push({
+              risk: "System Prompt Exposure",
+              severity: "medium",
+              description: "Hardcoded system prompts detected",
+              owaspCategory: OWASP_LLM_CATEGORIES.SYSTEM_PROMPT_LEAKAGE,
+              relatedComponents: Array.from(imports),
+              evidence: [{
+                file: file.path,
+                line: lineIndex + 1,
+                snippet: line.trim(),
+                context: {
+                  before: lines.slice(Math.max(0, lineIndex - 2), lineIndex),
+                  after: lines.slice(lineIndex + 1, lineIndex + 3),
+                  scope: detectScope(lines, lineIndex)
+                }
+              }],
+              confidence: 0.85
+            });
+          }
+        }
+      });
+    }
+
+    // Step 4: Generate summary
+    const summary = {
+      totalAIUsage: aiComponents.length,
+      risksByLevel: {
+        high: securityRisks.filter(r => r.severity === 'high').length,
+        medium: securityRisks.filter(r => r.severity === 'medium').length,
+        low: securityRisks.filter(r => r.severity === 'low').length
+      },
+      topRisks: securityRisks
+        .sort((a, b) => b.confidence - a.confidence)
+        .slice(0, 3)
+        .map(r => r.risk)
+    };
+
+    const result: AnalysisResult = {
+      repositoryName: content.repositoryName,
+      timestamp: new Date().toISOString(),
+      aiComponents,
+      securityRisks,
+      callGraph,
+      summary
+    };
+
+    analysisCache.set(cacheKey, result);
+
+    return result;
   } catch (error) {
-    console.error('Error analyzing package files:', error);
-    // Return proper AnalysisResult instead of empty array
+    console.error('Error analyzing repository:', error);
     return {
       repositoryName: content.repositoryName,
       timestamp: new Date().toISOString(),
@@ -333,153 +488,6 @@ async function analyzeRepository(content: RepositoryContent): Promise<AnalysisRe
       }
     };
   }
-  
-  // Use these findings to inform our code analysis
-  const detectedLibraries = new Set(packageComponents.map(c => c.name));
-  
-  // Initialize graph for tracking relationships
-  const callGraph = {
-    nodes: [] as string[],
-    edges: [] as Array<{ from: string; to: string; type: string }>
-  };
-
-  // Step 2: Scan for AI components and build initial graph
-  const aiComponents: AIComponent[] = [];
-  const detectedImports = new Map<string, Set<string>>(); // file -> imports
-
-  for (const file of content.files) {
-    // Skip non-code files
-    if (!['.py', '.js', '.ts', '.jsx', '.tsx'].includes(file.extension)) {
-      continue;
-    }
-
-    const lines = file.content.split('\n');
-    
-    // Track imports and build graph
-    lines.forEach((line, lineIndex) => {
-      // Check for imports
-      for (const [library, pattern] of Object.entries(AI_PATTERNS.imports)) {
-        if (pattern.test(line)) {
-          // Add to graph
-          if (!callGraph.nodes.includes(file.path)) {
-            callGraph.nodes.push(file.path);
-          }
-          
-          // Record the import
-          if (!detectedImports.has(file.path)) {
-            detectedImports.set(file.path, new Set());
-          }
-          detectedImports.get(file.path)?.add(library);
-
-          // Add component with high confidence due to direct import
-          aiComponents.push({
-            name: library,
-            type: 'Library',
-            confidence: 0.9,
-            detectionMethod: 'import',
-            locations: [{
-              file: file.path,
-              line: lineIndex + 1,
-              snippet: line.trim(),
-              context: {
-                before: lines.slice(Math.max(0, lineIndex - 2), lineIndex),
-                after: lines.slice(lineIndex + 1, lineIndex + 3),
-                scope: detectScope(lines, lineIndex)
-              }
-            }]
-          });
-        }
-      }
-    });
-  }
-
-  // Step 3: Detect actual usage and update confidence
-  const securityRisks: SecurityRisk[] = [];
-  
-  for (const file of content.files) {
-    if (!detectedImports.has(file.path)) continue;
-
-    const imports = detectedImports.get(file.path)!;
-    const lines = file.content.split('\n');
-
-    lines.forEach((line, lineIndex) => {
-      // Check for model usage
-      for (const [modelType, pattern] of Object.entries(AI_PATTERNS.models)) {
-        if (pattern.test(line)) {
-          // Add to risks if we find direct model usage
-          securityRisks.push({
-            risk: "Direct Model Usage",
-            severity: "high",
-            description: `Direct usage of ${modelType} model detected`,
-            owaspCategory: OWASP_LLM_CATEGORIES.PROMPT_INJECTION,
-            relatedComponents: Array.from(imports),
-            evidence: [{
-              file: file.path,
-              line: lineIndex + 1,
-              snippet: line.trim(),
-              context: {
-                before: lines.slice(Math.max(0, lineIndex - 2), lineIndex),
-                after: lines.slice(lineIndex + 1, lineIndex + 3),
-                scope: detectScope(lines, lineIndex)
-              }
-            }],
-            confidence: 0.95
-          });
-        }
-      }
-
-      // Check for system prompts
-      for (const [promptType, pattern] of Object.entries(AI_PATTERNS.systemPrompts)) {
-        if (pattern.test(line)) {
-          securityRisks.push({
-            risk: "System Prompt Exposure",
-            severity: "medium",
-            description: "Hardcoded system prompts detected",
-            owaspCategory: OWASP_LLM_CATEGORIES.SYSTEM_PROMPT_LEAKAGE,
-            relatedComponents: Array.from(imports),
-            evidence: [{
-              file: file.path,
-              line: lineIndex + 1,
-              snippet: line.trim(),
-              context: {
-                before: lines.slice(Math.max(0, lineIndex - 2), lineIndex),
-                after: lines.slice(lineIndex + 1, lineIndex + 3),
-                scope: detectScope(lines, lineIndex)
-              }
-            }],
-            confidence: 0.85
-          });
-        }
-      }
-    });
-  }
-
-  // Step 4: Generate summary
-  const summary = {
-    totalAIUsage: aiComponents.length,
-    risksByLevel: {
-      high: securityRisks.filter(r => r.severity === 'high').length,
-      medium: securityRisks.filter(r => r.severity === 'medium').length,
-      low: securityRisks.filter(r => r.severity === 'low').length
-    },
-    topRisks: securityRisks
-      .sort((a, b) => b.confidence - a.confidence)
-      .slice(0, 3)
-      .map(r => r.risk)
-  };
-
-  const result: AnalysisResult = {
-    repositoryName: content.repositoryName,
-    timestamp: new Date().toISOString(),
-    aiComponents,
-    securityRisks,
-    callGraph,
-    summary
-  };
-
-  analysisCache.set(cacheKey, result);
-
-  return result;
 }
 
 // Add missing utility function
