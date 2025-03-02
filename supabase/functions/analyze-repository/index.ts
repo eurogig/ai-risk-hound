@@ -323,24 +323,30 @@ type CallGraph = {
 
 // Main analysis function (to be implemented next)
 async function analyzeRepository(content: RepositoryContent): Promise<AnalysisResult> {
-  // Step 1: Analyze package files first
   try {
+    console.log('Starting repository analysis...');
+    
+    // Step 1: Analyze package files
+    console.log('Analyzing package files...');
     const packageComponents = analyzePackageFiles(content.files);
+    console.log('Package components found:', packageComponents);
     
-    // Use these findings to inform our code analysis
+    // Step 2: Initialize tracking
     const detectedLibraries = new Set(packageComponents.map(c => c.name));
+    console.log('Detected libraries:', Array.from(detectedLibraries));
     
-    // Initialize graph for tracking relationships
     const callGraph: CallGraph = {
       nodes: [],
       edges: []
     };
 
-    // Step 2: Scan for AI components and build initial graph
+    // Step 3: Scan for AI components
+    console.log('Scanning for AI components...');
     const aiComponents: AIComponent[] = [];
-    const detectedImports = new Map<string, Set<string>>(); // file -> imports
+    const detectedImports = new Map<string, Set<string>>();
 
     for (const file of content.files) {
+      console.log(`Analyzing file: ${file.path}`);
       // Skip non-code files
       if (!['.py', '.js', '.ts', '.jsx', '.tsx'].includes(file.extension)) {
         continue;
@@ -387,11 +393,15 @@ async function analyzeRepository(content: RepositoryContent): Promise<AnalysisRe
       });
     }
 
-    // Step 3: Detect actual usage and update confidence
+    // Step 4: Security risk analysis
+    console.log('Analyzing security risks...');
     const securityRisks: SecurityRisk[] = [];
     
     for (const file of content.files) {
-      if (!detectedImports.has(file.path)) continue;
+      if (!detectedImports.has(file.path)) {
+        console.log(`Skipping security analysis for ${file.path} - no AI imports detected`);
+        continue;
+      }
 
       const imports = detectedImports.get(file.path)!;
       const lines = file.content.split('\n');
@@ -448,46 +458,33 @@ async function analyzeRepository(content: RepositoryContent): Promise<AnalysisRe
       });
     }
 
-    // Step 4: Generate summary
-    const summary = {
-      totalAIUsage: aiComponents.length,
-      risksByLevel: {
-        high: securityRisks.filter(r => r.severity === 'high').length,
-        medium: securityRisks.filter(r => r.severity === 'medium').length,
-        low: securityRisks.filter(r => r.severity === 'low').length
-      },
-      topRisks: securityRisks
-        .sort((a, b) => b.confidence - a.confidence)
-        .slice(0, 3)
-        .map(r => r.risk)
-    };
+    console.log('Analysis complete. Found:');
+    console.log(`- ${aiComponents.length} AI components`);
+    console.log(`- ${securityRisks.length} security risks`);
+    console.log(`- ${callGraph.nodes.length} files in call graph`);
 
-    const result: AnalysisResult = {
+    return {
       repositoryName: content.repositoryName,
       timestamp: new Date().toISOString(),
       aiComponents,
       securityRisks,
       callGraph,
-      summary
-    };
-
-    analysisCache.set(cacheKey, result);
-
-    return result;
-  } catch (error) {
-    console.error('Error analyzing repository:', error);
-    return {
-      repositoryName: content.repositoryName,
-      timestamp: new Date().toISOString(),
-      aiComponents: [],
-      securityRisks: [],
-      callGraph: { nodes: [], edges: [] },
       summary: {
-        totalAIUsage: 0,
-        risksByLevel: { high: 0, medium: 0, low: 0 },
-        topRisks: []
+        totalAIUsage: aiComponents.length,
+        risksByLevel: {
+          high: securityRisks.filter(r => r.severity === 'high').length,
+          medium: securityRisks.filter(r => r.severity === 'medium').length,
+          low: securityRisks.filter(r => r.severity === 'low').length
+        },
+        topRisks: securityRisks
+          .sort((a, b) => b.confidence - a.confidence)
+          .slice(0, 3)
+          .map(r => r.risk)
       }
     };
+  } catch (error) {
+    console.error('Error in analyzeRepository:', error);
+    throw error; // Let the outer try-catch handle it
   }
 }
 
