@@ -40,9 +40,27 @@ interface SecurityRisksCardProps {
 
 const SecurityRisksCard = ({ 
   risks, 
-  verifiedCodeReferences,
-  aiComponents
+  verifiedCodeReferences = [],
+  aiComponents = []
 }: SecurityRisksCardProps) => {
+  if (!risks || risks.length === 0) {
+    return (
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-xl flex items-center gap-2">
+            <ShieldAlert className="h-5 w-5 text-green-500" />
+            Security Analysis
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="p-4 text-center text-gray-500">
+            No security risks detected in this repository.
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
   // Add debug logging to see what security risks we're receiving
   console.log("Security risks in SecurityRisksCard:", JSON.stringify(risks, null, 2));
   

@@ -17,6 +17,30 @@ interface BadgeProps extends React.HTMLAttributes<HTMLDivElement> {
 }
 
 const ConfidenceScoreCard = ({ components }: ConfidenceScoreCardProps) => {
+  // Handle empty components array
+  if (!components || components.length === 0) {
+    return (
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-xl">AI Confidence Score</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-2">
+            <div className="flex justify-between items-center">
+              <span className="text-sm text-gray-500">No AI components detected</span>
+              <span className="font-medium">0%</span>
+            </div>
+            <Progress value={0} className="h-2 bg-gray-100" />
+            <div className="pt-2">
+              <Badge className="bg-green-500">No AI Usage Detected</Badge>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  // Original rendering logic for when we have components
   return (
     <Card>
       <CardHeader className="pb-2">
