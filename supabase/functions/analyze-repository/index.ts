@@ -760,35 +760,59 @@ function detectSecurityRisks(files: RepositoryFile[], components: AIComponent[])
   // Create a map of risk types to avoid duplication
   const riskMap = new Map<string, SecurityRisk>();
   
-  // Initialize standard risks
-  riskMap.set("Hardcoded API Keys", {
-    risk: "Hardcoded API Keys",
-    severity: "high" as Severity,
-    description: "API keys or credentials found directly in code",
-    owaspCategory: OWASP_LLM_CATEGORIES.INSECURE_OUTPUT_HANDLING,
-    relatedComponents: [],
-    evidence: [],
-    confidence: 0.95
-  });
+  // Check if we have RAG components (vector databases + LLMs)
+  const hasVectorDB = components.some(c => c.type === 'Vector Database');
+  const hasLLM = components.some(c => 
+    c.type === 'LLM Provider' || 
+    c.name.toLowerCase().includes('openai') || 
+    c.name.toLowerCase().includes('anthropic')
+  );
   
+  // Initialize RAG-specific risks if we have both vector DBs and LLMs
+  if (hasVectorDB && hasLLM) {
+    // LLM08:2025 - Vector and Embedding Weaknesses
+    riskMap.set("RAG Data Leakage", {
+      risk: "RAG Data Leakage",
+      severity: "medium" as Severity,
+      description: "RAG implementation may leak sensitive information through vector retrieval",
+      owaspCategory: OWASP_LLM_CATEGORIES.VECTOR_AND_EMBEDDING_WEAKNESSES,
+      relatedComponents: [],
+      evidence: [],
+      confidence: 0.85
+    });
+    
+    // LLM01:2025 - Prompt Injection
+    riskMap.set("RAG Prompt Injection", {
+      risk: "RAG Prompt Injection",
+      severity: "high" as Severity,
+      description: "User input is used in RAG queries without proper sanitization",
+      owaspCategory: OWASP_LLM_CATEGORIES.PROMPT_INJECTION,
+      relatedComponents: [],
+      evidence: [],
+      confidence: 0.9
+    });
+  }
+  
+  // LLM07:2025 - System Prompt Leakage
   riskMap.set("System Prompt Exposure", {
     risk: "System Prompt Exposure",
     severity: "medium" as Severity,
-    description: "System prompts found in code which could expose application logic",
+    description: "System prompts hardcoded in application code",
     owaspCategory: OWASP_LLM_CATEGORIES.SYSTEM_PROMPT_LEAKAGE,
     relatedComponents: [],
     evidence: [],
     confidence: 0.9
   });
   
-  riskMap.set("Potential RAG Prompt Injection", {
-    risk: "Potential RAG Prompt Injection",
-    severity: "medium" as Severity,
-    description: "RAG implementation detected without clear input sanitization",
-    owaspCategory: OWASP_LLM_CATEGORIES.PROMPT_INJECTION,
+  // LLM03:2025 - Supply Chain
+  riskMap.set("Hardcoded API Keys", {
+    risk: "Hardcoded API Keys",
+    severity: "high" as Severity,
+    description: "API keys or credentials found directly in code",
+    owaspCategory: OWASP_LLM_CATEGORIES.SUPPLY_CHAIN,
     relatedComponents: [],
     evidence: [],
-    confidence: 0.8
+    confidence: 0.95
   });
   
   // Scan each file for risks
@@ -813,25 +837,57 @@ function detectSecurityRisks(files: RepositoryFile[], components: AIComponent[])
       }
     });
     
-    // Check for RAG implementations with potential injection vulnerabilities
-    if (hasVectorDBComponent(components, file.path)) {
+    // Check for RAG prompt injection vulnerabilities
+    if (hasVectorDB && hasLLM) {
       // Look for query operations that might use user input
       const queryLines = lines
         .map((line, idx) => ({ line, idx }))
-        .filter(({ line }) => /\.query\s*\(/.test(line) && /user|input|prompt|message/.test(line));
+        .filter(({ line }) => 
+          /\.query\s*\(/.test(line) && 
+          /user|input|prompt|message|text/.test(line) &&
+          !/sanitize|validate|clean/.test(line.toLowerCase())
+        );
         
       if (queryLines.length > 0) {
-        const risk = riskMap.get("Potential RAG Prompt Injection")!;
-        risk.evidence.push({
-          file: file.path,
-          line: queryLines[0].idx + 1,
-          snippet: queryLines[0].line.trim(),
-          context: {
-            before: lines.slice(Math.max(0, queryLines[0].idx - 2), queryLines[0].idx),
-            after: lines.slice(queryLines[0].idx + 1, Math.min(lines.length, queryLines[0].idx + 3)),
-            scope: detectScope(lines, queryLines[0].idx)
-          }
+        const risk = riskMap.get("RAG Prompt Injection")!;
+        queryLines.forEach(({ line, idx }) => {
+          risk.evidence.push({
+            file: file.path,
+            line: idx + 1,
+            snippet: line.trim(),
+            context: {
+              before: lines.slice(Math.max(0, idx - 2), idx),
+              after: lines.slice(idx + 1, Math.min(lines.length, idx + 3)),
+              scope: detectScope(lines, idx)
+            }
+          });
         });
+      }
+      
+      // Check for potential data leakage in RAG
+      if (file.path.includes('pinecone') || file.content.includes('vector') || file.content.includes('embed')) {
+        const dataLeakageLines = lines
+          .map((line, idx) => ({ line, idx }))
+          .filter(({ line }) => 
+            /upsert|index|store/.test(line) && 
+            !/filter|sanitize|redact/.test(line.toLowerCase())
+          );
+          
+        if (dataLeakageLines.length > 0) {
+          const risk = riskMap.get("RAG Data Leakage")!;
+          dataLeakageLines.forEach(({ line, idx }) => {
+            risk.evidence.push({
+              file: file.path,
+              line: idx + 1,
+              snippet: line.trim(),
+              context: {
+                before: lines.slice(Math.max(0, idx - 2), idx),
+                after: lines.slice(idx + 1, Math.min(lines.length, idx + 3)),
+                scope: detectScope(lines, idx)
+              }
+            });
+          });
+        }
       }
     }
     
@@ -863,6 +919,10 @@ function detectAIComponents(files: RepositoryFile[]): AIComponent[] {
   // Track unique components by name to avoid duplication
   const componentMap = new Map<string, AIComponent>();
   
+  // Track which files have been processed for vector DB references
+  // to avoid duplicate detections
+  const processedVectorDBFiles = new Set<string>();
+  
   for (const file of files) {
     const lines = file.content.split('\n');
     
@@ -880,6 +940,8 @@ function detectAIComponents(files: RepositoryFile[]): AIComponent[] {
         componentType = 'LLM Provider';
       } else if (/pinecone|chroma|qdrant|weaviate|milvus/.test(packageName)) {
         componentType = 'Vector Database';
+        // Mark this file as processed for vector DB
+        processedVectorDBFiles.add(file.path);
       } else if (/sentence-transformers|embedding/.test(packageName)) {
         componentType = 'Embedding Model';
       } else {
@@ -939,6 +1001,16 @@ function detectAIComponents(files: RepositoryFile[]): AIComponent[] {
             });
           }
           
+          // For vector databases, skip if we've already processed this file
+          if (type === 'Vector Database' && processedVectorDBFiles.has(file.path)) {
+            continue;
+          }
+          
+          // Mark this file as processed for vector DB if it's a vector DB component
+          if (type === 'Vector Database') {
+            processedVectorDBFiles.add(file.path);
+          }
+          
           componentMap.get(name)!.locations.push({
             file: file.path,
             line: lineIndex + 1,
@@ -952,6 +1024,13 @@ function detectAIComponents(files: RepositoryFile[]): AIComponent[] {
         }
       }
     }
+    
+    // Skip the vectordb library detection for files we've already processed
+    if (processedVectorDBFiles.has(file.path)) {
+      continue;
+    }
+    
+    // Don't add generic "vectordb" components based on mentions in comments or variable names
   }
   
   return Array.from(componentMap.values());
